@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vite/client"],
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "paths": { "@/*": ["./dashboard/*"] }
+  },
+  "include": ["dashboard/**/*.ts", "dashboard/**/*.tsx"]
+}
