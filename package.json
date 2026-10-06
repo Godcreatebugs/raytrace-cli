@@ -1,5 +1,5 @@
 {
-  "name": "@raytrace/cli",
+  "name": "@raytrace-cli/cli",
   "version": "0.1.0",
   "description": "See what your coding agent did: traces, tool calls, cost and step-by-step evidence for Claude Code and Codex.",
   "license": "MIT",

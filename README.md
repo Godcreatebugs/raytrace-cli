@@ -1,20 +1,37 @@
 # RayTrace
 
-See what your coding agent actually did. RayTrace records every prompt you
-give Claude Code or Codex, every tool call the agent made on the way to its
-answer, what each step cost, and what the model had in front of it when it
-decided. You browse all of it in a dashboard on your own machine.
+**See what your coding agent actually did.**
 
-Everything stays on your computer. Your sessions are not sent anywhere unless you
-turn on the optional AI features (see [Privacy](#privacy)).
+[ npm package ](https://www.npmjs.com/package/@raytrace-cli/cli) ·
+[ Quick start ](#quick-start) · [ Dashboard tour ](#dashboard-tour) ·
+[ Privacy ](#privacy) · [ Report an issue ](https://github.com/Godcreatebugs/raytrace-cli/issues)
 
-## Install
+Your agent finished the task. Which files did it read? What commands did it run?
+Where did the tokens and money go?
+
+RayTrace turns Claude Code and Codex sessions into a dashboard you can explore
+on your own machine: prompts, answers, tool calls, cost, and captured context.
+
+![RayTrace tool-call timeline showing commands, reported results, cost, time, and token usage](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/tool-calls.jpg)
+
+*One real coding task: 50 model round trips, 58 tool calls, and a command-by-command record.*
+
+- **Follow the work.** Open a prompt and trace the steps that led to its answer.
+- **Inspect the evidence.** Expand tool calls to see commands and their reported output.
+- **Understand the cost.** See model, token usage, time, and cost when available.
+- **Explore the context.** Review earlier conversation and files brought into the task.
+
+Session capture and the dashboard work locally. Claude Code recording needs no
+OpenRouter key; optional AI summaries and the Codex launcher do. See [Privacy](#privacy)
+for what those features send outside your machine.
+
+## Quick start
 
 You need **Node.js 22.13 or newer** (`node --version`). macOS and Linux are
 supported.
 
 ```sh
-npm install -g @raytrace/cli
+npm install -g @raytrace-cli/cli
 raytrace setup
 ```
 
@@ -24,34 +41,65 @@ raytrace setup
    `~/.claude/settings.json`. Your other settings and hooks are left as they
    are, and the previous file is kept as `settings.json.raytrace-backup`.
 2. **An OpenRouter API key** (optional, Enter to skip). It turns on one-line
-   step summaries and `raytrace codex`. Everything else works without it.
+   step summaries and `raytrace codex`.
 
-Then it starts RayTrace and opens the dashboard at http://127.0.0.1:8797.
+Then it starts RayTrace and opens the dashboard at **http://127.0.0.1:8797**.
 
-Install globally (`-g`) rather than running it with `npx`: the Claude Code hook
-runs the `raytrace` command, so it has to stay on your PATH.
+Install globally (`-g`): the Claude Code hook runs the `raytrace` command, so it
+has to stay on your PATH.
 
-## Use
+### See your first trace
 
-Use Claude Code as you normally do. Each prompt shows up in the dashboard a
-moment after the agent answers.
+Use Claude Code as you normally do. Try a small task such as:
 
-| Section | What it answers |
-|---|---|
-| **Prompts** | What you asked and what came back, with a year of activity at a glance |
-| **Tool calls** | How the agent got there: every round trip to the model and every tool call, with cost, time and tokens, as a list or a graph |
-| **Context** | What the model was working from: earlier prompts, files it read, and how full its context window was |
+> List the files in this project and explain where the main entry point is.
 
-For Codex, start it through RayTrace instead of directly (needs the OpenRouter
-key):
+After the agent answers, open **Prompts** in the dashboard. Select your prompt,
+then choose **Tool calls** to follow the work or **Context** to inspect what
+was brought into the task.
+
+For Codex, add an OpenRouter key during setup and start it through RayTrace:
 
 ```sh
-raytrace codex            # any Codex arguments work after it
+raytrace codex            # pass Codex arguments after this command
 ```
+
+## Dashboard tour
+
+### Prompts — find the conversation
+
+Browse your prompt history, revisit answers, and see activity across the year.
+Each prompt links to its tool calls and context, with model and cost information
+alongside it when available.
+
+![RayTrace prompt history with an activity calendar and real Claude Code tasks](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/prompts.jpg)
+
+### Tool calls — follow each step
+
+The timeline shows the commands the agent chose, their reported results, and
+metrics for each model round trip. Expand a row for details, group similar steps,
+or switch to **Graph** to follow the sequence visually.
+
+![RayTrace graph connecting three model requests with reported tool-call results and request metrics](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/trace-graph.jpg)
+
+*Graph view works without AI summaries; an optional OpenRouter key adds short descriptions.*
+
+### Context — inspect what informed the answer
+
+Explore earlier prompts, files read during the task, and captured internal
+instructions. Open a file entry to inspect the text associated with it. Token
+counts and file-use indicators help you explore what contributed to the context.
+
+![RayTrace context inspector showing file reads, estimated tokens, and an expanded file entry](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/context.jpg)
+
+*Screenshots captured from RayTrace running locally in Brave with selected real
+Claude Code transcript excerpts. Local paths are anonymized; prior conversation
+was omitted from the screenshot dataset. Token estimates and Claude Code costs
+are approximate; file reads inferred from shell commands are marked in the UI.*
 
 ## Commands
 
-| Command | |
+| Command | What it does |
 |---|---|
 | `raytrace setup` | one-time setup; run it again to change settings |
 | `raytrace start` | start recording in the background |
@@ -95,7 +143,7 @@ RayTrace at the same sessions and the records line up run for run.
 
 ```sh
 raytrace uninstall --purge   # removes the hook and ~/.raytrace
-npm uninstall -g @raytrace/cli
+npm uninstall -g @raytrace-cli/cli
 ```
 
 ## Troubleshooting
