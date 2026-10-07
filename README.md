@@ -25,6 +25,10 @@ Session capture and the dashboard work locally. Claude Code recording needs no
 OpenRouter key; optional AI summaries and the Codex launcher do. See [Privacy](#privacy)
 for what those features send outside your machine.
 
+**New: [cloud sandboxes](#cloud-sandboxes-preview) (preview).** Run your agent
+in an isolated sandbox on RayTrace's servers instead of your laptop, and review
+every session with your team at [app.raytracer.si](https://app.raytracer.si).
+
 ## Quick start
 
 You need **Node.js 22.13 or newer** (`node --version`). macOS and Linux are
@@ -97,6 +101,39 @@ Claude Code transcript excerpts. Local paths are anonymized; prior conversation
 was omitted from the screenshot dataset. Token estimates and Claude Code costs
 are approximate; file reads inferred from shell commands are marked in the UI.*
 
+## Cloud sandboxes (preview)
+
+A cloud sandbox is an isolated copy of your project on RayTrace's servers, with
+a terminal you open from your machine. Run Claude Code or Codex inside it: what
+the agent asked, the tool calls it made, and the commands that actually ran are
+recorded for your organization.
+
+```sh
+raytrace auth login          # sign in once; a code opens in your browser
+cd your-project              # any Git repository
+raytrace sandbox create      # upload it to a new sandbox
+raytrace sandbox shell       # a terminal in the sandbox: run claude or codex there
+```
+
+Then open **[app.raytracer.si](https://app.raytracer.si)** and sign in with the
+same account to see your organization's prompts, sandboxes and tool calls.
+
+- **What is uploaded:** the files Git would track in the repository (including
+  new files it does not ignore), without `.git`, dependencies such as
+  `node_modules`, build output, `.env*` files, private keys (`.pem`, `.key`,
+  `.p12`, `.pfx`) and common credential files (`.npmrc`, `.netrc`, `id_rsa`, …).
+  The upload is limited to 256 MiB. Review your project for secrets inside other
+  files before you upload.
+- **Signing in to your agent:** sign in to Claude Code inside the sandbox as
+  you would on your machine. That sign-in stays in the sandbox until you
+  destroy it.
+- **When you are done:** `raytrace sandbox stop` keeps the files;
+  `raytrace sandbox destroy` deletes them and any sign-in made inside. The
+  recorded sessions are kept for your organization.
+
+Cloud sandboxes are a preview and may change; please
+[report issues](https://github.com/Godcreatebugs/raytrace-cli/issues) you run into.
+
 ## Commands
 
 | Command | What it does |
@@ -109,6 +146,12 @@ are approximate; file reads inferred from shell commands are marked in the UI.*
 | `raytrace doctor` | check the install without changing anything |
 | `raytrace codex [args]` | run Codex through RayTrace |
 | `raytrace uninstall` | remove the Claude Code hook; `--purge` also deletes recorded data |
+| `raytrace auth login` | sign in to RayTrace (needed for cloud sandboxes); `status`, `logout` |
+| `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
+| `raytrace sandbox list` | your cloud sandboxes |
+| `raytrace sandbox shell [id]` | open a terminal in a sandbox |
+| `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
+| `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
 
 ## Getting the most out of it
 
@@ -139,6 +182,18 @@ RayTrace at the same sessions and the records line up run for run.
   OpenRouter's public list of models once. That request carries none of your
   data.
 
+Cloud sandboxes are different by design: they run on RayTrace's servers.
+
+- `raytrace sandbox create` uploads your project (see
+  [what is uploaded](#cloud-sandboxes-preview)) to RayTrace.
+- Inside a sandbox, the prompts, model requests and answers, tool calls and the
+  commands that run are recorded on RayTrace's servers for your organization.
+  Members of your organization can see them at app.raytracer.si; other
+  organizations cannot.
+- `raytrace auth login` keeps your sign-in in the macOS Keychain or the Linux
+  secret service (a file readable only by you where neither is available), and
+  `raytrace auth logout` removes it.
+
 ## Uninstall
 
 ```sh
@@ -154,6 +209,9 @@ background process logs to `~/.raytrace/logs/proxy.log`.
 - **Nothing shows up for Claude Code:** check `raytrace status` says
   "recording", and that `raytrace` is on your PATH (`which raytrace`). Sessions
   appear when the agent finishes a step, not while it is typing.
+- **`Cannot reach RayTrace at https://api.raytracer.si`:** check your
+  connection. Networks that inspect HTTPS, such as some company Wi-Fi, can
+  block it; try another network.
 - **Port 8797 is in use:** set `RAYTACE_PORT=<port>` in `~/.raytrace/config.env`,
   then `raytrace stop && raytrace start`.
 
