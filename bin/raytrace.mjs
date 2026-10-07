@@ -15,9 +15,18 @@ Usage: raytrace <command>
   doctor       check the install without changing anything
   codex [...]  run Codex through RayTrace (needs an OpenRouter key)
   uninstall    remove the Claude Code hook, optionally all recorded data
+  auth ...     sign in to RayTrace: login, status, logout
+  sandbox ...  cloud sandboxes: create, list, shell, start, stop, destroy
 
 Options for setup:   --yes  --no-claude-code  --no-start  --openrouter-key <key>
 Options for uninstall: --yes  --purge (also delete ~/.raytrace)
+
+Sandboxes (preview; sign in first with raytrace auth login):
+  raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
+  raytrace sandbox list
+  raytrace sandbox shell [id]               a terminal in it; run claude or codex there
+  raytrace sandbox start|stop [id]
+  raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
 
 Data and settings live in ~/.raytrace (override with RAYTRACE_HOME).`;
 
@@ -47,6 +56,38 @@ const commands = await import('../src/commands.mjs');
 
 // `codex` passes everything after it straight to Codex.
 if (command === 'codex') { await commands.codex(rest); process.exit(); }
+
+if (command === 'auth') {
+  const auth = await import('../src/auth.mjs');
+  const sub = rest[0];
+  const action = { login: auth.login, status: auth.status, logout: auth.logout }[sub];
+  if (!action) { console.error(`Usage: raytrace auth login | status | logout`); process.exit(2); }
+  try { await action(); process.exit(0); }
+  catch (error) { console.error(`raytrace auth ${sub}: ${error.message}`); process.exit(1); }
+}
+
+if (command === 'sandbox') {
+  const sandbox = await import('../src/sandbox.mjs');
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
+      yes: { type: 'boolean', short: 'y' },
+      name: { type: 'string' },
+    } });
+  } catch (error) { console.error(`${error.message}\n\nRun \`raytrace help\` for usage.`); process.exit(2); }
+  const [sub, id] = parsed.positionals;
+  const action = {
+    create: () => sandbox.create(parsed.values),
+    list: () => sandbox.list(),
+    shell: () => sandbox.shell(id),
+    start: () => sandbox.start(id),
+    stop: () => sandbox.stop(id),
+    destroy: () => sandbox.destroy(id, parsed.values),
+  }[sub];
+  if (!action) { console.error(`Unknown sandbox command: ${sub ?? '(none)'}\n\n${HELP}`); process.exit(2); }
+  try { await action(); process.exit(0); }
+  catch (error) { console.error(`raytrace sandbox ${sub}: ${error.message}`); process.exit(1); }
+}
 
 let flags;
 try {
