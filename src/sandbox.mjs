@@ -2,13 +2,14 @@
 //
 // The project is packed here, so files that must stay on this machine never
 // leave it, then uploaded once; the control plane creates a gVisor sandbox
-// from it with RayTrace's Claude Code hook installed. Until accounts exist
-// the control plane is the sandbox manager in the RayTrace repo, and its one
-// API key (.raytace/api_key there) goes in RAYTRACE_API_KEY.
+// from it with RayTrace's Claude Code hook installed. Requests carry your
+// `raytrace auth login` token; RAYTRACE_API_KEY overrides it for a control
+// plane running without accounts (development).
 import { spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
 import { request } from 'node:http';
 import { basename, join } from 'node:path';
+import { accessToken } from './auth.mjs';
 import { readConfig } from './config.mjs';
 import { ask, interactive } from './prompt.mjs';
 
@@ -30,16 +31,16 @@ export function packable(path) {
     && !name.startsWith('.env') && !SECRET_EXTENSIONS.test(name) && !SECRET_NAMES.has(name);
 }
 
-function api() {
+async function api() {
   const config = readConfig();
   const url = process.env.RAYTRACE_API_URL || config.RAYTRACE_API_URL || 'http://127.0.0.1:8799';
-  const key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY;
-  if (!key) throw new Error('No API key. Set RAYTRACE_API_KEY to the one the sandbox manager printed when it started.');
+  const key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY || await accessToken();
+  if (!key) throw new Error('Not signed in. Run: raytrace auth login');
   return { url: new URL(url), key };
 }
 
 async function call(method, path, { body, headers = {} } = {}) {
-  const { url, key } = api();
+  const { url, key } = await api();
   let response;
   try {
     response = await fetch(new URL(path, url), { method, body, headers: { authorization: `Bearer ${key}`, ...headers } });
@@ -142,7 +143,7 @@ export async function destroy(id, flags) {
 export async function shell(id) {
   id = await pickId(id);
   if (!interactive()) throw new Error('raytrace sandbox shell needs a terminal.');
-  const { url, key } = api();
+  const { url, key } = await api();
   const { stdin, stdout } = process;
   const path = `/v1/sandboxes/${id}/shell?rows=${stdout.rows || 24}&cols=${stdout.columns || 80}`;
   await new Promise((resolve, reject) => {

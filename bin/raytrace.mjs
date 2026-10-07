@@ -15,12 +15,13 @@ Usage: raytrace <command>
   doctor       check the install without changing anything
   codex [...]  run Codex through RayTrace (needs an OpenRouter key)
   uninstall    remove the Claude Code hook, optionally all recorded data
+  auth ...     sign in to RayTrace: login, status, logout
   sandbox ...  cloud sandboxes: create, list, shell, start, stop, destroy
 
 Options for setup:   --yes  --no-claude-code  --no-start  --openrouter-key <key>
 Options for uninstall: --yes  --purge (also delete ~/.raytrace)
 
-Sandboxes (preview; needs RAYTRACE_API_KEY):
+Sandboxes (preview; sign in first with raytrace auth login):
   raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
   raytrace sandbox list
   raytrace sandbox shell [id]               a terminal in it; run claude or codex there
@@ -55,6 +56,15 @@ const commands = await import('../src/commands.mjs');
 
 // `codex` passes everything after it straight to Codex.
 if (command === 'codex') { await commands.codex(rest); process.exit(); }
+
+if (command === 'auth') {
+  const auth = await import('../src/auth.mjs');
+  const sub = rest[0];
+  const action = { login: auth.login, status: auth.status, logout: auth.logout }[sub];
+  if (!action) { console.error(`Usage: raytrace auth login | status | logout`); process.exit(2); }
+  try { await action(); process.exit(0); }
+  catch (error) { console.error(`raytrace auth ${sub}: ${error.message}`); process.exit(1); }
+}
 
 if (command === 'sandbox') {
   const sandbox = await import('../src/sandbox.mjs');
