@@ -7,7 +7,8 @@
 // plane running without accounts (development).
 import { spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
-import { request } from 'node:http';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
 import { accessToken } from './auth.mjs';
 import { readConfig } from './config.mjs';
@@ -147,7 +148,9 @@ export async function shell(id) {
   const { stdin, stdout } = process;
   const path = `/v1/sandboxes/${id}/shell?rows=${stdout.rows || 24}&cols=${stdout.columns || 80}`;
   await new Promise((resolve, reject) => {
-    const req = request(new URL(path, url), { headers: { authorization: `Bearer ${key}`, connection: 'Upgrade', upgrade: 'raytrace-shell' } });
+    const target = new URL(path, url);
+    const request = target.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = request(target, { headers: { authorization: `Bearer ${key}`, connection: 'Upgrade', upgrade: 'raytrace-shell' } });
     req.on('response', (response) => {
       let text = '';
       response.on('data', (chunk) => { text += chunk; });
