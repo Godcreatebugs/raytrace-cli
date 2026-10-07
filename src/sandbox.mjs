@@ -1,13 +1,15 @@
-// `raytrace sandbox`: cloud sandboxes, through the RayTrace control plane.
+// `raytrace sandbox`: cloud sandboxes, through RayTrace's API
+// (https://api.raytracer.si; RAYTRACE_API_URL points elsewhere).
 //
 // The project is packed here, so files that must stay on this machine never
-// leave it, then uploaded once; the control plane creates a gVisor sandbox
-// from it with RayTrace's Claude Code hook installed. Requests carry your
-// `raytrace auth login` token; RAYTRACE_API_KEY overrides it for a control
-// plane running without accounts (development).
+// leave it, then uploaded once; RayTrace creates an isolated sandbox from it
+// that records its Claude Code sessions. Requests carry your `raytrace auth
+// login` token; RAYTRACE_API_KEY overrides it for a server running without
+// accounts (development).
 import { spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
-import { request } from 'node:http';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
 import { accessToken } from './auth.mjs';
 import { readConfig } from './config.mjs';
@@ -16,9 +18,12 @@ import { ask, interactive } from './prompt.mjs';
 const say = (line = '') => console.log(line);
 const MAX_BYTES = 256 * 1024 * 1024;
 const ID = /^rtp-[a-f0-9]{32}$/;
+const API = 'https://api.raytracer.si';
+const unreachable = (url) => new Error(`Cannot reach RayTrace at ${url.origin}. Check your connection; `
+  + 'networks that inspect HTTPS (some company Wi-Fi) may block it.');
 
 // Never packed: version control, dependencies and build output (rebuilt in the
-// sandbox), and files that usually hold credentials. Matches the manager's import.
+// sandbox), and files that usually hold credentials.
 const EXCLUDED = new Set(['.git', '.raytace', '.raytrace', '.ssh', '.aws', '.azure', '.config', 'node_modules', '.venv',
   '__pycache__', '.next', '.vinext', 'dist', 'coverage', '.wrangler', '.DS_Store']);
 const SECRET_NAMES = new Set(['.npmrc', '.netrc', '.pypirc', 'credentials', 'auth.json', 'id_rsa', 'id_ed25519']);
@@ -33,7 +38,7 @@ export function packable(path) {
 
 async function api() {
   const config = readConfig();
-  const url = process.env.RAYTRACE_API_URL || config.RAYTRACE_API_URL || 'http://127.0.0.1:8799';
+  const url = process.env.RAYTRACE_API_URL || config.RAYTRACE_API_URL || API;
   const key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY || await accessToken();
   if (!key) throw new Error('Not signed in. Run: raytrace auth login');
   return { url: new URL(url), key };
@@ -45,7 +50,7 @@ async function call(method, path, { body, headers = {} } = {}) {
   try {
     response = await fetch(new URL(path, url), { method, body, headers: { authorization: `Bearer ${key}`, ...headers } });
   } catch {
-    throw new Error(`Cannot reach the control plane at ${url.origin}. Is the sandbox manager running?`);
+    throw unreachable(url);
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -118,7 +123,7 @@ export async function list() {
   const boxes = (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
   if (!boxes.length) { say('No sandboxes. Create one from a Git repository: raytrace sandbox create'); return; }
   for (const box of boxes) {
-    // The manager's own time (seconds), or the host's container time once it reports one.
+    // The sandbox's creation time (seconds), or its container's once that is known.
     const created = typeof box.created === 'number' ? box.created * 1000 : Date.parse(box.created);
     const age = Math.round((Date.now() - created) / 60000);
     say(`${box.id}  ${String(box.status).padEnd(8)}  ${box.name}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old)`);
@@ -147,7 +152,9 @@ export async function shell(id) {
   const { stdin, stdout } = process;
   const path = `/v1/sandboxes/${id}/shell?rows=${stdout.rows || 24}&cols=${stdout.columns || 80}`;
   await new Promise((resolve, reject) => {
-    const req = request(new URL(path, url), { headers: { authorization: `Bearer ${key}`, connection: 'Upgrade', upgrade: 'raytrace-shell' } });
+    const target = new URL(path, url);
+    const request = target.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = request(target, { headers: { authorization: `Bearer ${key}`, connection: 'Upgrade', upgrade: 'raytrace-shell' } });
     req.on('response', (response) => {
       let text = '';
       response.on('data', (chunk) => { text += chunk; });
@@ -164,7 +171,7 @@ export async function shell(id) {
       socket.on('close', done);
       socket.on('error', done);
     });
-    req.on('error', () => reject(new Error(`Cannot reach the control plane at ${url.origin}. Is the sandbox manager running?`)));
+    req.on('error', () => reject(unreachable(url)));
     req.end();
   });
   say(`\nLeft ${id}. It is still running: raytrace sandbox stop ${id}`);

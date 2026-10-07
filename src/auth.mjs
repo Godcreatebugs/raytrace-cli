@@ -58,7 +58,7 @@ function forget() {
 
 // ------------------------------------------------------------- tokens
 
-/** The access token's claims, read without verifying: the control plane verifies. */
+/** The access token's claims, read without verifying: RayTrace's API verifies. */
 function claims(token) {
   try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')); } catch { return {}; }
 }
