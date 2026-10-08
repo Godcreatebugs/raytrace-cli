@@ -136,6 +136,9 @@ export async function login() {
   throw new Error('The code expired before it was approved. Run raytrace auth login again.');
 }
 
+/** The signed-in account's email, for messages that need to say whose workspace this is; null when signed out. */
+export function account() { return load()?.user?.email || null; }
+
 export async function status() {
   const session = load();
   if (!session) { say('Not signed in. Run: raytrace auth login'); return; }
