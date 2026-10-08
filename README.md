@@ -112,18 +112,25 @@ recorded for your organization.
 raytrace auth login          # sign in once; a code opens in your browser
 cd your-project              # any Git repository
 raytrace sandbox create      # upload it to a new sandbox
-raytrace sandbox shell       # a terminal in the sandbox: run claude or codex there
+raytrace connect             # a terminal in the sandbox: run claude or codex there
 ```
 
 Then open **[app.raytracer.si](https://app.raytracer.si)** and sign in with the
-same account to see your organization's prompts, sandboxes and tool calls.
+same account to see your organization's prompts, sandboxes and tool calls. You
+can also create a sandbox there by dropping a project folder on the Sandboxes
+page; it shows the command to open it, `raytrace connect <sandbox-id>`, which
+signs you in first if you are not. Sandboxes belong to the account that made
+them: `raytrace auth status` says which one the CLI is using.
 
 - **What is uploaded:** the files Git would track in the repository (including
   new files it does not ignore), without `.git`, dependencies such as
   `node_modules`, build output, `.env*` files, private keys (`.pem`, `.key`,
   `.p12`, `.pfx`) and common credential files (`.npmrc`, `.netrc`, `id_rsa`, …).
-  The upload is limited to 256 MiB. Review your project for secrets inside other
-  files before you upload.
+  Review your project for secrets inside other files before you upload.
+- **Limits:** a project may be up to 200 MiB and 20,000 files, each file up to
+  25 MiB (100 MiB once packed). A project over a limit is refused, with the
+  files named, and nothing is uploaded; add them to `.gitignore`. You can have
+  three sandboxes at a time.
 - **Signing in to your agent:** sign in to Claude Code inside the sandbox as
   you would on your machine. That sign-in stays in the sandbox until you
   destroy it.
@@ -149,7 +156,7 @@ Cloud sandboxes are a preview and may change; please
 | `raytrace auth login` | sign in to RayTrace (needed for cloud sandboxes); `status`, `logout` |
 | `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
 | `raytrace sandbox list` | your cloud sandboxes |
-| `raytrace sandbox shell [id]` | open a terminal in a sandbox |
+| `raytrace connect [id]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`) |
 | `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
 | `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
 

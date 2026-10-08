@@ -16,15 +16,18 @@ Usage: raytrace <command>
   codex [...]  run Codex through RayTrace (needs an OpenRouter key)
   uninstall    remove the Claude Code hook, optionally all recorded data
   auth ...     sign in to RayTrace: login, status, logout
+  connect <id> open a terminal in a cloud sandbox (signs you in if needed)
   sandbox ...  cloud sandboxes: create, list, shell, start, stop, destroy
 
 Options for setup:   --yes  --no-claude-code  --no-start  --openrouter-key <key>
 Options for uninstall: --yes  --purge (also delete ~/.raytrace)
 
-Sandboxes (preview; sign in first with raytrace auth login):
+Sandboxes (preview):
   raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
+                                            (up to 200 MiB, 25 MiB a file, 20,000 files)
   raytrace sandbox list
-  raytrace sandbox shell [id]               a terminal in it; run claude or codex there
+  raytrace connect [id]                     a terminal in it; run claude or codex there
+                                            (same as: raytrace sandbox shell [id])
   raytrace sandbox start|stop [id]
   raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
 
@@ -64,6 +67,14 @@ if (command === 'auth') {
   if (!action) { console.error(`Usage: raytrace auth login | status | logout`); process.exit(2); }
   try { await action(); process.exit(0); }
   catch (error) { console.error(`raytrace auth ${sub}: ${error.message}`); process.exit(1); }
+}
+
+// `raytrace connect <id>`: the sandbox's terminal, by the id the dashboard shows.
+if (command === 'connect') {
+  if (rest.length > 1 || rest[0]?.startsWith('-')) { console.error('Usage: raytrace connect [sandbox-id]'); process.exit(2); }
+  const sandbox = await import('../src/sandbox.mjs');
+  try { await sandbox.shell(rest[0]); process.exit(0); }
+  catch (error) { console.error(`raytrace connect: ${error.message}`); process.exit(1); }
 }
 
 if (command === 'sandbox') {

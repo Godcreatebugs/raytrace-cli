@@ -11,12 +11,18 @@ import { lstatSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
-import { accessToken } from './auth.mjs';
+import { accessToken, account, login } from './auth.mjs';
 import { readConfig } from './config.mjs';
 import { ask, interactive } from './prompt.mjs';
 
 const say = (line = '') => console.log(line);
-const MAX_BYTES = 256 * 1024 * 1024;
+// What one project upload may be. RayTrace's API holds the dashboard's folder
+// upload to the same numbers and checks them again; saying so here saves the upload.
+const MIB = 1024 * 1024;
+const MAX_FILE = 25 * MIB;      // any one file
+const MAX_BYTES = 200 * MIB;    // all files, before compression
+const MAX_FILES = 20_000;
+const MAX_ARCHIVE = 100 * MIB;  // the packed upload
 const ID = /^rtp-[a-f0-9]{32}$/;
 const API = 'https://api.raytracer.si';
 const unreachable = (url) => new Error(`Cannot reach RayTrace at ${url.origin}. Check your connection; `
@@ -39,8 +45,15 @@ export function packable(path) {
 async function api() {
   const config = readConfig();
   const url = process.env.RAYTRACE_API_URL || config.RAYTRACE_API_URL || API;
-  const key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY || await accessToken();
-  if (!key) throw new Error('Not signed in. Run: raytrace auth login');
+  let key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY || await accessToken();
+  if (!key) {
+    if (!interactive()) throw new Error('Not signed in. Run: raytrace auth login');
+    say('You are not signed in to RayTrace yet.');
+    await login();
+    key = await accessToken();
+    if (!key) throw new Error('Not signed in. Run: raytrace auth login');
+    say();
+  }
   return { url: new URL(url), key };
 }
 
@@ -61,15 +74,22 @@ async function call(method, path, { body, headers = {} } = {}) {
 function projectFiles(root) {
   const listed = spawnSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 256 * 1024 * 1024 });
   if (listed.status !== 0) throw new Error(`${root} is not a Git repository. Run this from inside one.`);
-  const files = []; const skipped = []; let total = 0;
+  const files = []; const skipped = []; const large = []; let total = 0;
   for (const name of [...new Set(listed.stdout.toString().split('\0').filter(Boolean))].sort()) {
     let stat;
     try { stat = lstatSync(join(root, name)); } catch { continue; } // deleted, still in the index
     if (!packable(name) || !stat.isFile()) { skipped.push(name); continue; } // symlinks too
+    if (stat.size > MAX_FILE) { large.push(`${name} (${Math.round(stat.size / MIB)} MiB)`); continue; }
     total += stat.size;
-    if (total > MAX_BYTES) throw new Error('The project is over 256 MiB; add large generated files to .gitignore first.');
     files.push(name);
   }
+  // Refused, never trimmed: a project missing its large files would not be the project.
+  if (large.length) {
+    throw new Error(`${large.length === 1 ? 'This file is' : 'These files are'} over ${MAX_FILE / MIB} MiB, the most one file may be:\n  `
+      + `${large.slice(0, 10).join('\n  ')}${large.length > 10 ? `\n  ... and ${large.length - 10} more` : ''}\nAdd ${large.length === 1 ? 'it' : 'them'} to .gitignore (or remove ${large.length === 1 ? 'it' : 'them'}), then try again.`);
+  }
+  if (files.length > MAX_FILES) throw new Error(`The project has ${files.length.toLocaleString()} files; the most is ${MAX_FILES.toLocaleString()}. Add generated files to .gitignore first.`);
+  if (total > MAX_BYTES) throw new Error(`The project is ${Math.round(total / MIB)} MiB; the most is ${MAX_BYTES / MIB} MiB. Add large generated files to .gitignore first.`);
   return { files, skipped, total };
 }
 
@@ -96,7 +116,8 @@ async function pickId(id) {
   }
   const live = (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
   if (live.length === 1) return live[0].id;
-  throw new Error(live.length ? 'More than one sandbox; name one (raytrace sandbox list).' : 'No sandboxes yet: raytrace sandbox create');
+  throw new Error(live.length ? 'More than one sandbox; name one (raytrace sandbox list).'
+    : `No sandboxes${account() ? ` in ${account()}'s workspace` : ''} yet: raytrace sandbox create`);
 }
 
 export async function create(flags) {
@@ -109,6 +130,7 @@ export async function create(flags) {
   say(`Packing ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root}`);
   if (skipped.length) say(`Not uploaded (${skipped.length}): ${skipped.slice(0, 8).join(', ')}${skipped.length > 8 ? ', ...' : ''}`);
   const archive = await pack(root, files);
+  if (archive.length > MAX_ARCHIVE) throw new Error(`The packed project is ${Math.round(archive.length / MIB)} MiB; the most is ${MAX_ARCHIVE / MIB} MiB.`);
   say('Creating the sandbox (the first one on a host takes a little longer)...');
   const box = await call('POST', '/v1/sandboxes', {
     body: archive, headers: { 'content-type': 'application/gzip', 'x-raytrace-name': name.replace(/[^A-Za-z0-9._ -]/g, '-').slice(0, 100) },
@@ -116,7 +138,7 @@ export async function create(flags) {
   say(`\nSandbox ${box.id} is running.`);
   say(box.transcripts ? 'Claude Code sessions in it are recorded.'
     : `Claude Code transcripts are off: ${box.transcripts_off}. Commands are still recorded.`);
-  say(`Open it:  raytrace sandbox shell ${box.id}`);
+  say(`Open it:  raytrace connect ${box.id}`);
 }
 
 export async function list() {
@@ -144,10 +166,11 @@ export async function destroy(id, flags) {
   say(`${id} destroyed.`);
 }
 
-/** An interactive terminal in the sandbox, carried over one upgraded HTTP request. */
+/** An interactive terminal in the sandbox, carried over one upgraded HTTP request.
+ * `raytrace connect <id>` and `raytrace sandbox shell [id]` are the same thing. */
 export async function shell(id) {
+  if (!interactive()) throw new Error('Connecting to a sandbox needs a terminal.');
   id = await pickId(id);
-  if (!interactive()) throw new Error('raytrace sandbox shell needs a terminal.');
   const { url, key } = await api();
   const { stdin, stdout } = process;
   const path = `/v1/sandboxes/${id}/shell?rows=${stdout.rows || 24}&cols=${stdout.columns || 80}`;
@@ -158,7 +181,14 @@ export async function shell(id) {
     req.on('response', (response) => {
       let text = '';
       response.on('data', (chunk) => { text += chunk; });
-      response.on('end', () => { try { reject(new Error(JSON.parse(text).error)); } catch { reject(new Error(`HTTP ${response.statusCode}`)); } });
+      response.on('end', () => {
+        // The API does not say whether another account has this sandbox; the likely mix-up is worth naming.
+        if (response.statusCode === 404 && account()) {
+          return reject(new Error(`No sandbox ${id} in ${account()}'s workspace. If it was made under another account `
+            + '(for example in the dashboard), sign in as that one: raytrace auth login'));
+        }
+        try { reject(new Error(JSON.parse(text).error)); } catch { reject(new Error(`HTTP ${response.statusCode}`)); }
+      });
     });
     req.on('upgrade', (_response, socket, head) => {
       say(`Connected to ${id}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.\n`);
@@ -174,5 +204,5 @@ export async function shell(id) {
     req.on('error', () => reject(unreachable(url)));
     req.end();
   });
-  say(`\nLeft ${id}. It is still running: raytrace sandbox stop ${id}`);
+  say(`\nLeft ${id}. It is still running. Back in: raytrace connect ${id}   Stop it: raytrace sandbox stop ${id}`);
 }
