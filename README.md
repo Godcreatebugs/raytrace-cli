@@ -9,8 +9,9 @@
 Your agent finished the task. Which files did it read? What commands did it run?
 Where did the tokens and money go?
 
-RayTrace turns Claude Code and Codex sessions into a dashboard you can explore
-on your own machine: prompts, answers, tool calls, cost, and captured context.
+RayTrace turns Claude Code and Codex sessions into a dashboard you can explore:
+prompts, answers, tool calls, cost, and captured context. Run your agent in a
+RayTrace cloud sandbox, or record the sessions you run on your own machine.
 
 ![RayTrace tool-call timeline showing commands, reported results, cost, time, and token usage](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/tool-calls.jpg)
 
@@ -21,14 +22,6 @@ on your own machine: prompts, answers, tool calls, cost, and captured context.
 - **Understand the cost.** See model, token usage, time, and cost when available.
 - **Explore the context.** Review earlier conversation and files brought into the task.
 
-Session capture and the dashboard work locally. Claude Code recording needs no
-OpenRouter key; optional AI summaries and the Codex launcher do. See [Privacy](#privacy)
-for what those features send outside your machine.
-
-**New: [cloud sandboxes](#cloud-sandboxes-preview) (preview).** Run your agent
-in an isolated sandbox on RayTrace's servers instead of your laptop, and review
-every session with your team at [app.raytracer.si](https://app.raytracer.si).
-
 ## Quick start
 
 You need **Node.js 22.13 or newer** (`node --version`). macOS and Linux are
@@ -36,23 +29,39 @@ supported.
 
 ```sh
 npm install -g @raytrace-cli/cli
+raytrace auth login             # opens your browser: sign in, or create your account
+cd your-project                 # any Git repository
+raytrace sandbox create         # uploads it to a new cloud sandbox and prints its id
+raytrace connect <sandbox-id>   # a terminal in the sandbox: run claude or codex there
+```
+
+`auth login` prints a short code and opens the sign-in page. New here? Create
+your account on that page, approve the code, and come back to the terminal.
+
+Then open **[app.raytracer.si](https://app.raytracer.si)** to review the
+session with your team: prompts, tool calls, and the commands that actually
+ran. You can also create the sandbox there, by dropping a project folder on the
+Sandboxes page. RayTrace asks you for no API key. See
+[Cloud sandboxes](#cloud-sandboxes-preview) for what is uploaded and the limits.
+
+### Record locally instead
+
+To keep sessions on your own machine, set up local recording. It is separate
+from cloud sandboxes: neither needs the other.
+
+```sh
 raytrace setup
 ```
 
-`setup` asks two things:
-
-1. **Record Claude Code sessions?** It adds a small hook to
-   `~/.claude/settings.json`. Your other settings and hooks are left as they
-   are, and the previous file is kept as `settings.json.raytrace-backup`.
-2. **An OpenRouter API key** (optional, Enter to skip). It turns on one-line
-   step summaries and `raytrace codex`.
+`setup` asks one thing: **Record Claude Code sessions?** It adds a small hook to
+`~/.claude/settings.json`. Your other settings and hooks are left as they are,
+and the previous file is kept as `settings.json.raytrace-backup`. No API key is
+needed.
 
 Then it starts RayTrace and opens the dashboard at **http://127.0.0.1:8797**.
 
 Install globally (`-g`): the Claude Code hook runs the `raytrace` command, so it
 has to stay on your PATH.
-
-### See your first trace
 
 Use Claude Code as you normally do. Try a small task such as:
 
@@ -62,9 +71,12 @@ After the agent answers, open **Prompts** in the dashboard. Select your prompt,
 then choose **Tool calls** to follow the work or **Context** to inspect what
 was brought into the task.
 
-For Codex, add an OpenRouter key during setup and start it through RayTrace:
+For Codex on your machine, give setup an OpenRouter key and start it through
+RayTrace. Optional AI summaries in the local dashboard use the same key; see
+[Privacy](#privacy) for what they send outside your machine.
 
 ```sh
+raytrace setup --openrouter-key <key>
 raytrace codex            # pass Codex arguments after this command
 ```
 
@@ -108,19 +120,15 @@ a terminal you open from your machine. Run Claude Code or Codex inside it: what
 the agent asked, the tool calls it made, and the commands that actually ran are
 recorded for your organization.
 
-```sh
-raytrace auth login          # sign in once; a code opens in your browser
-cd your-project              # any Git repository
-raytrace sandbox create      # upload it to a new sandbox
-raytrace connect             # a terminal in the sandbox: run claude or codex there
-```
+The [quick start](#quick-start) has the commands. If you skip `raytrace auth
+login`, `raytrace sandbox create` and `raytrace connect` start the same sign-in
+first. With one sandbox, `raytrace connect` works without the id.
 
-Then open **[app.raytracer.si](https://app.raytracer.si)** and sign in with the
-same account to see your organization's prompts, sandboxes and tool calls. You
-can also create a sandbox there by dropping a project folder on the Sandboxes
-page; it shows the command to open it, `raytrace connect <sandbox-id>`, which
-signs you in first if you are not. Sandboxes belong to the account that made
-them: `raytrace auth status` says which one the CLI is using.
+At **[app.raytracer.si](https://app.raytracer.si)**, sign in with the same
+account to see your organization's prompts, sandboxes and tool calls. A sandbox
+created there shows the command to open it, `raytrace connect <sandbox-id>`.
+Sandboxes belong to the account that made them: `raytrace auth status` says
+which one the CLI is using.
 
 - **What is uploaded:** the files Git would track in the repository (including
   new files it does not ignore), without `.git`, dependencies such as
@@ -143,22 +151,29 @@ Cloud sandboxes are a preview and may change; please
 
 ## Commands
 
+Cloud sandboxes:
+
 | Command | What it does |
 |---|---|
-| `raytrace setup` | one-time setup; run it again to change settings |
+| `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
+| `raytrace connect [id]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`) |
+| `raytrace sandbox list` | your cloud sandboxes |
+| `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
+| `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
+| `raytrace auth login` | sign in to RayTrace; `status`, `logout` |
+
+Local recording:
+
+| Command | What it does |
+|---|---|
+| `raytrace setup` | set up local recording; run it again to change settings |
 | `raytrace start` | start recording in the background |
 | `raytrace stop` | stop it |
 | `raytrace status` | is it running, and is Claude Code being recorded |
-| `raytrace open` | open the dashboard |
+| `raytrace open` | open the local dashboard |
 | `raytrace doctor` | check the install without changing anything |
 | `raytrace codex [args]` | run Codex through RayTrace |
 | `raytrace uninstall` | remove the Claude Code hook; `--purge` also deletes recorded data |
-| `raytrace auth login` | sign in to RayTrace (needed for cloud sandboxes); `status`, `logout` |
-| `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
-| `raytrace sandbox list` | your cloud sandboxes |
-| `raytrace connect [id]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`) |
-| `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
-| `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
 
 ## Getting the most out of it
 
@@ -175,10 +190,12 @@ RayTrace at the same sessions and the records line up run for run.
 
 ## Privacy
 
+Local recording stays on your machine.
+
 - Recorded sessions, settings and logs live in `~/.raytrace` (move it with the
   `RAYTRACE_HOME` environment variable). The dashboard and its API listen on
   `127.0.0.1` only.
-- API keys you give `setup` are stored in `~/.raytrace/config.env`, readable
+- An API key you give `setup` (`--openrouter-key`) is stored in `~/.raytrace/config.env`, readable
   only by you. Keys and auth headers in recorded requests are replaced with
   `[REDACTED]` before they are saved.
 - With an OpenRouter key, summaries send short excerpts of each step (and of
