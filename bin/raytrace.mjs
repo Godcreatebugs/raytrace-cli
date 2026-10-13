@@ -22,20 +22,7 @@ Cloud sandboxes:
   raytrace sandbox start|stop [id]
   raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
 
-Local recording (not needed for cloud sandboxes):
-  setup        set up local recording: Claude Code hook, then start
-  start        start RayTrace in the background (dashboard + recorder)
-  stop         stop it
-  status       is it running, and what is being recorded
-  open         open the local dashboard in your browser
-  doctor       check the install without changing anything
-  codex [...]  run Codex through RayTrace (needs an OpenRouter key)
-  uninstall    remove the Claude Code hook, optionally all recorded data
-
-Options for setup:   --yes  --no-claude-code  --no-start  --openrouter-key <key>
-Options for uninstall: --yes  --purge (also delete ~/.raytrace)
-
-Local data and settings live in ~/.raytrace (override with RAYTRACE_HOME).`;
+Your sign-in stays on this machine; raytrace auth logout removes it.`;
 
 // node:sqlite, which the recorder stores everything in, needs 22.13.
 const [major, minor] = process.versions.node.split('.').map(Number);
