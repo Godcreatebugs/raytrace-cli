@@ -7,31 +7,35 @@ const HELP = `RayTrace: see what your coding agent did.
 
 Usage: raytrace <command>
 
-  setup        one-time setup: Claude Code hook, API keys, then start
+Get started in the cloud (preview):
+  1. raytrace auth login             sign in, or create your account, in the browser
+  2. raytrace sandbox create         from a Git repository: upload it to a new sandbox
+  3. raytrace connect <sandbox-id>   a terminal in it; run claude or codex there
+
+Cloud sandboxes:
+  raytrace auth login|status|logout         your RayTrace sign-in
+  raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
+                                            (up to 200 MiB, 25 MiB a file, 20,000 files)
+  raytrace connect [id]                     a terminal in it; with one sandbox the id is
+                                            optional (same as: raytrace sandbox shell [id])
+  raytrace sandbox list
+  raytrace sandbox start|stop [id]
+  raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
+
+Local recording (not needed for cloud sandboxes):
+  setup        set up local recording: Claude Code hook, then start
   start        start RayTrace in the background (dashboard + recorder)
   stop         stop it
   status       is it running, and what is being recorded
-  open         open the dashboard in your browser
+  open         open the local dashboard in your browser
   doctor       check the install without changing anything
   codex [...]  run Codex through RayTrace (needs an OpenRouter key)
   uninstall    remove the Claude Code hook, optionally all recorded data
-  auth ...     sign in to RayTrace: login, status, logout
-  connect <id> open a terminal in a cloud sandbox (signs you in if needed)
-  sandbox ...  cloud sandboxes: create, list, shell, start, stop, destroy
 
 Options for setup:   --yes  --no-claude-code  --no-start  --openrouter-key <key>
 Options for uninstall: --yes  --purge (also delete ~/.raytrace)
 
-Sandboxes (preview):
-  raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
-                                            (up to 200 MiB, 25 MiB a file, 20,000 files)
-  raytrace sandbox list
-  raytrace connect [id]                     a terminal in it; run claude or codex there
-                                            (same as: raytrace sandbox shell [id])
-  raytrace sandbox start|stop [id]
-  raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
-
-Data and settings live in ~/.raytrace (override with RAYTRACE_HOME).`;
+Local data and settings live in ~/.raytrace (override with RAYTRACE_HOME).`;
 
 // node:sqlite, which the recorder stores everything in, needs 22.13.
 const [major, minor] = process.versions.node.split('.').map(Number);
@@ -63,7 +67,7 @@ if (command === 'codex') { await commands.codex(rest); process.exit(); }
 if (command === 'auth') {
   const auth = await import('../src/auth.mjs');
   const sub = rest[0];
-  const action = { login: auth.login, status: auth.status, logout: auth.logout }[sub];
+  const action = { login: auth.loginCommand, status: auth.status, logout: auth.logout }[sub];
   if (!action) { console.error(`Usage: raytrace auth login | status | logout`); process.exit(2); }
   try { await action(); process.exit(0); }
   catch (error) { console.error(`raytrace auth ${sub}: ${error.message}`); process.exit(1); }

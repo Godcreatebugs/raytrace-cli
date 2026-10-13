@@ -113,7 +113,8 @@ export async function login() {
   let interval = (start.data.interval || 5) * 1000;
   const deadline = Date.now() + (start.data.expires_in || 300) * 1000;
   say(`Your sign-in code: ${user_code}`);
-  say(`Opening ${verification_uri} to approve it (or open it yourself on any device).`);
+  say(`Opening ${verification_uri}: sign in, or create your account, and approve the code`);
+  say('(or open it yourself on any device).');
   openUrl(verification_uri_complete || verification_uri);
   say('Waiting for approval...');
   while (Date.now() < deadline) {
@@ -134,6 +135,12 @@ export async function login() {
     throw new Error(`Sign-in failed: ${data.error_description || data.error || `HTTP ${status}`}`);
   }
   throw new Error('The code expired before it was approved. Run raytrace auth login again.');
+}
+
+/** `raytrace auth login`: sign in, then say what comes next. */
+export async function loginCommand() {
+  await login();
+  say('\nNext, from a Git repository:  raytrace sandbox create');
 }
 
 /** The signed-in account's email, for messages that need to say whose workspace this is; null when signed out. */

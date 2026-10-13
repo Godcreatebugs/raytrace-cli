@@ -6,9 +6,10 @@ import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig, writeConfig } from './config.mjs';
 import { healthy, portInUse, runningPid, start, status, stop } from './proxy-process.mjs';
 import { HOOK_COMMAND, hookState, setHook } from './claude-code.mjs';
-import { askSecret, confirm, interactive } from './prompt.mjs';
+import { confirm, interactive } from './prompt.mjs';
 
 const say = (line = '') => console.log(line);
+const CLOUD_URL = 'https://app.raytracer.si';
 
 /** Whether `name` resolves on PATH: the Claude Code hook calls `raytrace` by name. */
 function onPath(name) {
@@ -44,20 +45,18 @@ export async function setup(flags) {
   else say('  Claude Code: not recorded');
   if (hooks.repoHook) say('  Note: the RayTrace repo\'s own Claude Code hook is also installed; sessions will be reported by both.');
 
-  // OpenRouter powers step summaries and `raytrace codex`.
-  // Without it the proxy runs native: traces still record, those features are off.
-  let openrouter = flags['openrouter-key'] ?? config.OPENROUTER_API_KEY ?? '';
-  if (!yes && flags['openrouter-key'] === undefined) {
-    say('\n  OpenRouter key: turns on step summaries and `raytrace codex`.');
-    const entered = await askSecret(`  Paste it${openrouter ? ' (Enter keeps the current one)' : ' (Enter to skip)'}: `);
-    if (entered) openrouter = entered;
-  }
+  // Setup never asks for an OpenRouter key: recording needs none. A key passed
+  // with --openrouter-key (or already saved) turns on local step summaries and
+  // `raytrace codex`; without one the proxy runs native and those are off.
+  const openrouter = flags['openrouter-key'] ?? config.OPENROUTER_API_KEY ?? '';
   writeConfig({
     ...config,
     RAYTACE_PROVIDER: openrouter ? 'openrouter' : 'native',
     OPENROUTER_API_KEY: openrouter,
   });
   say(`\n  Settings saved (only you can read ${paths.config}).`);
+  say('\n  Cloud sandboxes (preview): run your agent on RayTrace\'s servers, no API key to add.');
+  say(`  raytrace auth login, then in a Git repository: raytrace sandbox create   (or on the web: ${CLOUD_URL})`);
 
   if (hookClaude && !onPath('raytrace')) {
     say(`\n  Warning: \`raytrace\` is not on your PATH, and Claude Code's hook runs \`${HOOK_COMMAND}\`.`);
@@ -142,7 +141,7 @@ export async function doctor() {
 
 export async function codex(args) {
   const config = readConfig();
-  if (!config.OPENROUTER_API_KEY) { say('`raytrace codex` routes Codex through OpenRouter. Add a key with `raytrace setup` first.'); process.exitCode = 1; return; }
+  if (!config.OPENROUTER_API_KEY) { say('`raytrace codex` routes Codex through OpenRouter. Add a key first: raytrace setup --openrouter-key <key>'); process.exitCode = 1; return; }
   if (!(await healthy(portOf(config)))) await startCommand();
   const child = spawn(process.execPath, [paths.codex, ...args], { stdio: 'inherit', env: proxyEnv(config) });
   await new Promise((done) => child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); done(); }));
