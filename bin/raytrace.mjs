@@ -36,6 +36,12 @@ Local sandboxes (your project stays on this machine):
   Recorded commands, files and connections: http://localhost:8798.
   macOS and Linux; Windows is experimental. raytrace doctor shows what is missing.
 
+AI features in the dashboard (summaries, recaps, Chain of thought), on your own key:
+  raytrace key                              which keys are set
+  raytrace key openrouter                   add your OpenRouter key (asked for, not echoed)
+  raytrace key typesafe                     optional: Jev ranking and command severity
+  raytrace key <name> --remove
+
 Your sign-in stays on this machine; raytrace auth logout removes it.`;
 
 // node:sqlite, which the recorder stores everything in, needs 22.13.
@@ -82,6 +88,15 @@ if (command === 'connect') {
   const sandbox = await import('../src/sandbox.mjs');
   try { await sandbox.shell(args[0], flags); process.exit(0); }
   catch (error) { console.error(`raytrace connect: ${error.message}`); process.exit(1); }
+}
+
+// `raytrace key [openrouter|typesafe] [--remove]`: the keys the dashboard's AI features use.
+if (command === 'key') {
+  const args = rest.filter((arg) => arg !== '--remove');
+  if (args.length > 1 || args[0]?.startsWith('-')) { console.error('Usage: raytrace key [openrouter|typesafe] [--remove]'); process.exit(2); }
+  const { keyCommand } = await import('../src/commands.mjs');
+  try { await keyCommand(args[0], { remove: rest.includes('--remove') }); process.exit(0); }
+  catch (error) { console.error(`raytrace key: ${error.message}`); process.exit(1); }
 }
 
 if (command === 'sandbox') {

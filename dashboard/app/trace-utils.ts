@@ -82,7 +82,7 @@ export function runPlace(trace: { provider: string; sandboxId?: string; forkId?:
     reason: 'This is a Playground fork’s own run. Fork from the original prompt instead.' };
   const inSandbox = Boolean(trace.sandboxId?.startsWith('rtp-'));
   if (!inSandbox) return { where: 'mac', label: 'Mac', forkable: false,
-    reason: 'This prompt ran on your Mac, so it can’t be forked: nothing recorded how your files looked at each step, and replaying it would touch your real project. Run Claude Code in the sandbox (npm run dev:all -- --claude) to get runs you can fork.' };
+    reason: 'This prompt ran on your machine, so it can’t be forked: nothing recorded how your files looked at each step, and replaying it would touch your real project. Run Claude Code in a local sandbox (raytrace sandbox create --local) to get runs you can fork.' };
   if (trace.provider !== 'claude-code') return { where: 'sandbox', label: 'Sandbox', forkable: false,
     reason: 'Only Claude Code runs can be forked so far; this one ran a different agent in the sandbox.' };
   return { where: 'sandbox', label: 'Sandbox', forkable: true, reason: null };

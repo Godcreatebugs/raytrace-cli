@@ -55,7 +55,7 @@ function useContext(traceId: string) {
     let closed = false;
     api().fetch(`/raytace/prompt-context/${traceId}`).then(async (response) => {
       const value = await response.json() as PromptContext;
-      if (response.status === 404 && value.error === 'Unknown local endpoint.') throw new Error('The proxy is running an older version without this page. Restart it (npm run proxy) and reload.');
+      if (response.status === 404 && value.error === 'Unknown local endpoint.') throw new Error('The proxy is running an older version without this page. Restart it (raytrace stop && raytrace start) and reload.');
       if (!response.ok) throw new Error(value.error || 'Context unavailable');
       if (!closed) setData(value);
     }).catch((e) => { if (!closed) setError(e instanceof Error ? e.message : 'Context unavailable'); });

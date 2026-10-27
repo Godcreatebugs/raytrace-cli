@@ -140,7 +140,8 @@ function Causes({ attribution, number, onJump }: { attribution: Attribution; num
     <ol className="rt-cot-causes">{shown.map((cause) => {
       const step = cause.source_call_id ? number(cause.source_call_id) : null;
       return <li key={cause.key}>
-        {cause.probability != null && <strong className="rt-cot-pct">{percent(cause.probability)}</strong>}
+        {/* Unranked (no Jev): an empty cell keeps the dot and the reason in their grid columns. */}
+        {cause.probability != null ? <strong className="rt-cot-pct">{percent(cause.probability)}</strong> : <span aria-hidden="true" />}
         <i className={`rt-cot-dot k-${cause.kind}`} />
         <div>
           <span>{cause.reason}</span>
@@ -228,7 +229,7 @@ export function ChainOfThoughtView({ trace, focusCall }: { trace: Trace; focusCa
   </header>;
 
   if (place.where !== 'sandbox') return <section className="rt-view">{head}
-    <p className="rt-empty">Chain of thought is available for prompts run in the sandbox. Run Claude Code with <code>npm run dev:all -- --claude</code>.</p>
+    <p className="rt-empty">Chain of thought is available for prompts run in the sandbox. Run Claude Code in a local sandbox: <code>raytrace sandbox create --local</code>.</p>
   </section>;
   if (!calls.length) return <section className="rt-view">{head}<p className="rt-empty">This prompt made no tool calls.</p></section>;
 

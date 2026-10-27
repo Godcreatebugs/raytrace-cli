@@ -266,7 +266,7 @@ async function computeAttribution({ step, proposer }) {
   const cands = candidates(step, proposals);
   let result;
   let jev_model = null;
-  if (!typesafe.enabled) result = withoutJev(cands, 'Set TYPESAFE_API_KEY to rank these.');
+  if (!typesafe.enabled) result = withoutJev(cands, 'Add a TypeSafe key to rank these: raytrace key typesafe');
   else {
     try {
       const { requests } = jevRequests(step, cands);
@@ -652,7 +652,7 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url === '/raytace/explanations') {
     try {
-      if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate explanations.' });
+      if (routing.mode !== 'openrouter') return json(400, { error: 'Explanations need an OpenRouter key. Add yours: raytrace key openrouter' });
       const config = JSON.parse(requestBody);
       const entry = await savedOrLive(config.exchange_id);
       if (!entry) return json(404, { error: 'Saved step not found.' });
@@ -697,7 +697,7 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url === '/raytace/recap') {
     try {
-      if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate recaps.' });
+      if (routing.mode !== 'openrouter') return json(400, { error: 'Recaps need an OpenRouter key. Add yours: raytrace key openrouter' });
       const request = await currentRecapRequest(String(JSON.parse(requestBody).trace_id ?? ''));
       if (!request) return json(404, { error: 'Nothing to recap: the prompt was not found, or it made no tool calls.' });
       const cached = db.getSummary(request.key);
@@ -716,7 +716,7 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url === '/raytace/prompt-context/summary') {
     try {
-      if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate summaries.' });
+      if (routing.mode !== 'openrouter') return json(400, { error: 'Summaries need an OpenRouter key. Add yours: raytrace key openrouter' });
       const found = await promptContextFor(String(JSON.parse(requestBody).trace_id ?? ''));
       if (!found) return json(404, { error: 'Prompt not found in the captured history.' });
       const request = contextSummaryRequest(found.context, summaryModel);
@@ -738,7 +738,7 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url === '/raytace/summaries') {
     try {
-      if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate summaries.' });
+      if (routing.mode !== 'openrouter') return json(400, { error: 'Summaries need an OpenRouter key. Add yours: raytrace key openrouter' });
       const config = JSON.parse(requestBody);
       const request = await currentSummaryRequest(config.exchange_id);
       if (!request) return json(404, { error: 'Saved step not found.' });

@@ -130,6 +130,40 @@ raytrace sandbox destroy my-box                 # asks whether to delete its log
 - **The VM:** `limactl stop raytrace` frees its memory; `limactl delete
   raytrace` removes it.
 
+## AI features, on your own key
+
+The dashboard records and shows everything above without any key. A few
+views can also ask a model to explain a run; locally they use **your own
+OpenRouter key**, and the calls are billed to your OpenRouter account.
+
+```sh
+raytrace key openrouter   # paste your key from https://openrouter.ai/keys (not echoed)
+raytrace key              # which keys are set
+```
+
+| Feature | Where | Model (default) |
+|---|---|---|
+| Run recap: what the agent did and why, in a few lines | Story, Chain of thought | `anthropic/claude-sonnet-5.5` |
+| Chain of thought: the likely reasons for each tool call | Chain of thought | `qwen/qwen3-coder` |
+| Step summaries, and plain-English lines for commands no rule describes | Tool calls, Sandbox evidence | `openai/gpt-oss-120b` |
+
+- **Without a key** those parts say so and everything else works: Story's key
+  moments, Chain of thought's unranked reasons and the rule-based command
+  descriptions need no model.
+- **Cost:** each answer is kept, so opening the same prompt again costs
+  nothing. Nothing is sent until you open a view that needs it.
+- **What is sent:** to OpenRouter, the parts of the recorded run the feature
+  reads (the prompt, tool calls and their results, commands). Nothing goes to
+  RayTrace.
+- **Other models:** set `RAYTACE_OBSERVER_MODEL` (recap),
+  `RAYTACE_ATTRIBUTION_MODEL` (Chain of thought) or `RAYTACE_SUMMARY_MODEL`
+  (summaries) in `~/.raytrace/config.env`, then `raytrace stop && raytrace start`.
+- **Optional, Jev ranking:** `raytrace key typesafe` adds a
+  [TypeSafe](https://typesafe.ai) key, which ranks Chain of thought's reasons
+  and rates how severe each command was. Without it the reasons are listed
+  unranked and severity comes from rules.
+- `raytrace key openrouter --remove` removes a key.
+
 ## Commands
 
 | Command | What it does |
@@ -144,6 +178,7 @@ raytrace sandbox destroy my-box                 # asks whether to delete its log
 | `raytrace sandbox list --local` | your local sandboxes; their names work with `connect`, `start`, `stop` and `destroy` |
 | `raytrace sandbox destroy <name> [--delete-logs \| --keep-logs]` | delete a local sandbox; asks whether its captured logs go too, or move to `~/.raytrace/archive` |
 | `raytrace doctor` | what this machine has and lacks, local sandboxes included |
+| `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features; asked for, never taken as an argument |
 
 ## Privacy
 
