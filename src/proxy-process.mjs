@@ -10,6 +10,18 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig } from './config.mjs';
 
+// The proxy API this CLI's dashboard needs (proxy/raytace-proxy.mjs PROXY_API).
+// A proxy from an older install answers without it, or with less.
+export const PROXY_API = 2;
+
+/** The running proxy's API version: 0 for one from before it said. */
+export async function proxyApi(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/raytace/version`, { signal: AbortSignal.timeout(2000) });
+    return response.ok ? Number((await response.json()).api) || 0 : 0;
+  } catch { return 0; }
+}
+
 export async function healthy(port) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/raytace/models`, { signal: AbortSignal.timeout(2000) });
@@ -58,7 +70,14 @@ function tail(file, lines = 8) {
 export async function start() {
   const config = readConfig();
   const port = portOf(config);
-  if (await healthy(port)) return { started: false, port, pid: runningPid() };
+  if (await healthy(port)) {
+    if (await proxyApi(port) >= PROXY_API) return { started: false, port, pid: runningPid() };
+    // An older proxy, still running from before an upgrade: the dashboard it
+    // serves now is the new one, and it would answer it "Unknown local endpoint".
+    if (!runningPid()) throw new Error(`An older RayTrace proxy, not started by this CLI, is running on :${port}. Stop it where it was started, then run: raytrace start`);
+    await stop();
+    return { ...(await start()), replaced: true };
+  }
   if (await portInUse(port)) throw new Error(`Port ${port} is in use by something that is not answering as RayTrace. Free it, or set RAYTACE_PORT in ${paths.config}.`);
   if (!existsSync(paths.dashboard)) throw new Error(`The dashboard is missing from ${paths.dashboard}. Reinstall @raytrace/cli.`);
 

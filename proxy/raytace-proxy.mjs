@@ -39,6 +39,9 @@ const routing = providerConfig();
 const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
   ? selectModel(routing, process.env.RAYTACE_SUMMARY_MODEL)
   : (routing.models.oss || routing.defaultModel);
+// Bumped whenever the dashboard needs endpoints an older proxy lacks; the
+// CLI restarts a proxy it started that reports less (src/proxy-process.mjs).
+const PROXY_API = 2;
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
@@ -532,6 +535,9 @@ const server = createServer(async (req, res) => {
   }
   // Who is signed in and which paid features they have. Nobody yet: sign-in
   // comes with the RayTrace cloud; the dashboard already reads this shape.
+  // Which proxy this is, so the CLI can tell an outdated one still running
+  // after an upgrade (src/proxy-process.mjs PROXY_API) and replace it.
+  if (req.method === 'GET' && req.url === '/raytace/version') return json(200, { api: PROXY_API });
   if (req.method === 'GET' && req.url === '/raytace/account') return json(200, { signed_in: false, plan: 'free', features: [] });
   if (req.method === 'GET' && req.url === '/raytace/models') return json(200, { models: routing.mode === 'openrouter' ? Object.entries(routing.models).map(([alias, id]) => ({ alias, id })) : [], execution_available: routing.mode === 'openrouter' });
   const stepRoute = req.url?.match(/^\/raytace\/steps\/([a-f0-9-]+)\/(\d+)$/);

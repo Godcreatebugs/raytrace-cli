@@ -76,7 +76,8 @@ export async function setup(flags) {
 export async function startCommand({ open = false } = {}) {
   const result = await start();
   const url = `http://127.0.0.1:${result.port}`;
-  say(result.started ? `RayTrace is running: ${url}` : `RayTrace was already running: ${url}`);
+  say(result.replaced ? `RayTrace restarted with this version (an older one was running): ${url}`
+    : result.started ? `RayTrace is running: ${url}` : `RayTrace was already running: ${url}`);
   if (!result.started && !result.pid) say('  (started outside this CLI, e.g. from the RayTrace repo; `raytrace stop` will not stop it)');
   say(`  Logs: ${paths.proxyLog}`);
   if (open) openUrl(url);

@@ -1,7 +1,7 @@
 // The dashboard as a static page, served by the RayTrace proxy from the same
 // origin as its API. The views are raytace's own (app/), the same ones the
 // hosted dashboard shows; this one shows what a local install serves.
-import { StrictMode } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@fontsource/dm-sans/400.css';
 import '@fontsource/dm-sans/500.css';
@@ -22,4 +22,19 @@ const VIEWS: View[] = ['prompts', 'search', 'story', 'sandboxes', 'calls', 'sand
 // Same origin as the proxy that serves this page, whatever its port.
 configureApi({ fetch: (path, init) => fetch(path, init) });
 
-createRoot(document.getElementById('root')!).render(<StrictMode><Dashboard views={VIEWS} /></StrictMode>);
+// The page is read from disk, so after an upgrade an older proxy still running
+// serves it, and answers its new sections "Unknown local endpoint". Say why.
+const PROXY_API = 2;
+function OutdatedProxy() {
+  const [outdated, setOutdated] = useState(false);
+  useEffect(() => {
+    fetch('/raytace/version').then((response) => (response.ok ? response.json() : { api: 0 }))
+      .then((body) => setOutdated((Number(body.api) || 0) < PROXY_API), () => {});
+  }, []);
+  if (!outdated) return null;
+  return <div role="alert" style={{ padding: '10px 16px', background: 'light-dark(#fff4d6,#3a2f12)', color: 'light-dark(#5c4300,#ffd97a)', fontSize: 13, borderBottom: '1px solid light-dark(#f0d48a,#5c4a1c)' }}>
+    An older RayTrace proxy is running, so parts of this page cannot load. Restart it: <code>raytrace stop &amp;&amp; raytrace start</code>
+  </div>;
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode><OutdatedProxy /><Dashboard views={VIEWS} /></StrictMode>);
