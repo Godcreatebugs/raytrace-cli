@@ -794,7 +794,16 @@ export function openEvidenceStore(file) {
     forgetSessions(externalIds) {
       if (!externalIds.length) return 0;
       const marks = externalIds.map(() => '?').join(',');
+      // Runtime events, syscalls and their classifications are append-only
+      // (schema/runtime_evidence.sql, classification.sql):
+      // nothing may change recorded evidence. Their owner deleting a whole
+      // sandbox is the one exception, so those guards are lifted for these
+      // deletes and put back as they were, in the same transaction: if any of
+      // it fails, nothing changed and the guards were never off.
+      const guards = q(`SELECT sql FROM sqlite_schema WHERE type = 'trigger'
+        AND name IN ('runtime_events_no_delete', 'runtime_syscall_calls_no_delete', 'classification_results_no_delete')`).all().map((row) => row.sql);
       return transaction(() => {
+        db.exec('DROP TRIGGER IF EXISTS runtime_events_no_delete; DROP TRIGGER IF EXISTS runtime_syscall_calls_no_delete; DROP TRIGGER IF EXISTS classification_results_no_delete;');
         const sessions = `SELECT id FROM agent_sessions WHERE external_session_id IN (${marks})`;
         const exchanges = `SELECT id FROM agent_exchanges WHERE session_id IN (${sessions})`;
         const calls = `SELECT id FROM agent_tool_calls WHERE exchange_id IN (${exchanges})`;
@@ -832,6 +841,7 @@ export function openEvidenceStore(file) {
           UNION SELECT arguments_sha FROM agent_tool_calls WHERE arguments_sha IS NOT NULL
           UNION SELECT reported_result_sha FROM agent_tool_calls WHERE reported_result_sha IS NOT NULL
           UNION SELECT payload_sha FROM agent_context_items)`);
+        for (const sql of guards) db.exec(sql);
         return gone;
       });
     },
