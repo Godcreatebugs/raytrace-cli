@@ -9,14 +9,17 @@
  *
  * Read from the last request of the turn, whose input is the whole
  * conversation by the time the answer was written. Deterministic: no model
- * call. File operations are inferred from the command text, not observed,
- * and "used later" is a
- * word-overlap hint, not a measure of what the model weighed.
+ * call. A native file tool (Read, Write, Edit) names its file in its
+ * arguments; for a shell command the file operations are inferred from the
+ * command text. Neither is observed -- the kernel file tables are not
+ * populated yet -- and "used later" is a word-overlap hint, not a measure of
+ * what the model weighed.
  *
  * Sizes are characters; the dashboard turns them into estimated tokens. (The
  * proxy's JSON redaction blanks any field whose name contains "token".)
  */
 import { digest, proposedCommand, textOf } from './experiment-engine.mjs';
+import { nativeFileOperation } from './tool-metadata.mjs';
 
 const MAX_EXCERPT_CHARS = 1200;
 const MAX_EVIDENCE_WORDS = 3;
@@ -181,7 +184,9 @@ export function promptContext(entry, promptText, finalAnswer = '') {
     } else if (item?.role === 'assistant' && (item.type === 'message' || !item.type)) {
       answers.push({ index, when: when(index), text: text.slice(0, MAX_EXCERPT_CHARS), chars: text.length });
     } else if (callTypes.has(item?.type)) {
-      calls.set(item.call_id, { index, command: fullCommand(item.arguments ?? item.input ?? ''), name: item.name });
+      const native = nativeFileOperation(item.name, item.arguments ?? item.input ?? '');
+      calls.set(item.call_id, { index, name: item.name, native,
+        command: native ? `${item.name} ${native.text}` : fullCommand(item.arguments ?? item.input ?? '') });
     }
   });
   if (tools.length) internals.push({ kind: 'Tools', context_index: 'tools', chars: toolsChars, share: share(toolsChars),
@@ -200,10 +205,10 @@ export function promptContext(entry, promptText, finalAnswer = '') {
     const call = calls.get(item.call_id);
     if (!call) return;
     const body = outputBody(itemText(item));
-    const ops = fileOperations(call.command);
+    const ops = call.native ? [call.native] : fileOperations(call.command);
     // One output for several commands (`cat a; cat b; echo done`) cannot be
     // split between them, so each file is marked as sharing it.
-    const shared = outputSegments(call.command) > 1;
+    const shared = !call.native && outputSegments(call.command) > 1;
     for (const { path, op } of ops) {
       const key = `${op}:${path}`;
       const seen = files.get(key);
@@ -213,7 +218,7 @@ export function promptContext(entry, promptText, finalAnswer = '') {
       const later = laterText(index);
       const used = [...words].filter((word) => later.includes(word)).slice(0, MAX_EVIDENCE_WORDS);
       if (!seen) {
-        files.set(key, { path, op, when: when(index), reads: 1, lines, chars, share: share(chars), shared_output: op !== 'wrote' && shared,
+        files.set(key, { path, op, via: call.native ? 'tool' : 'command', when: when(index), reads: 1, lines, chars, share: share(chars), shared_output: op !== 'wrote' && shared,
           used_later: used, command: call.command, call_id: item.call_id, context_index: index, excerpt: body.slice(0, MAX_EXCERPT_CHARS) });
       } else {
         seen.reads += 1; seen.chars += chars; seen.share = share(seen.chars);

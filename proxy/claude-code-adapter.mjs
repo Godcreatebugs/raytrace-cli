@@ -156,12 +156,15 @@ export function parseTranscript(text) {
  * call's first line, and it is complete once that next call exists, or when
  * `final` (the session stopped): a call is never recorded half-written.
  * Subagent (sidechain) lines are left out.
+ *
+ * `sessionId` / `sessionStartedAt` file the rows under another session than
+ * the transcript's own (a sandbox's rtp- id, so its evidence joins them).
  */
-export function exchangesFromTranscript(lines, { final = false, version = null } = {}) {
+export function exchangesFromTranscript(lines, { final = false, version = null, sessionId: filedUnder = null, sessionStartedAt = null } = {}) {
   const main = lines.filter((line) => !line.isSidechain);
   const transcriptSession = main.find((line) => line.sessionId)?.sessionId ?? null;
-  const sessionId = transcriptSession;
-  const sessionStarted = main.find((line) => line.timestamp)?.timestamp ?? null;
+  const sessionId = filedUnder ?? transcriptSession;
+  const sessionStarted = sessionStartedAt ?? main.find((line) => line.timestamp)?.timestamp ?? null;
   const callOf = (line) => (line?.type === 'assistant' && line.message ? line.requestId ?? line.message.id : null);
   const grouped = new Set(); // indexes already emitted as part of an earlier line's call
   const rows = [];
@@ -236,4 +239,44 @@ export function exchangesFromTranscript(lines, { final = false, version = null }
 /** The span id a Claude Code call is recorded under (see exchangesFromTranscript). */
 export function claudeCodeSpanId(transcriptSession, requestId) {
   return stableId('claude-code', transcriptSession, requestId);
+}
+
+/**
+ * A transcript cut just before one model call, for a Playground fork to
+ * resume from: every line before that call's first line, byte for byte,
+ * except the tool results being edited. `results` maps a tool call id to the
+ * text its result is replaced with. Returns null when the call is not in
+ * this transcript.
+ *
+ * Claude Code resumes from these lines as they are, so what the forked model
+ * is asked is the original request with only the edits changed.
+ */
+export function forkTranscript(text, { spanId, results = {} }) {
+  const raw = String(text).split('\n');
+  const parsed = raw.map((line) => { try { return line.trim() ? JSON.parse(line) : null; } catch { return null; } });
+  const session = parsed.find((line) => line?.sessionId && !line.isSidechain)?.sessionId ?? null;
+  const cut = parsed.findIndex((line) => line?.type === 'assistant' && !line.isSidechain && line.message
+    && claudeCodeSpanId(session, line.requestId ?? line.message.id) === spanId);
+  if (!session || cut < 0) return null;
+  const edited = new Set();
+  const kept = raw.slice(0, cut).map((line, index) => {
+    const entry = parsed[index];
+    const content = entry?.type === 'user' ? entry.message?.content : null;
+    if (!Array.isArray(content) || !content.some((part) => part?.type === 'tool_result' && part.tool_use_id in results)) return line;
+    const copy = structuredClone(entry);
+    for (const part of copy.message.content) {
+      if (part?.type !== 'tool_result' || !(part.tool_use_id in results)) continue;
+      part.content = String(results[part.tool_use_id]);
+      delete part.is_error;
+      edited.add(part.tool_use_id);
+    }
+    // Claude Code's structured copy of the result would contradict the edit.
+    delete copy.toolUseResult;
+    return JSON.stringify(copy);
+  }).filter((line) => line.trim());
+  const priorCalls = parsed.slice(0, cut).filter((line) => line?.type === 'assistant' && !line.isSidechain)
+    .flatMap((line) => (line.message?.content ?? []).filter((block) => block?.type === 'tool_use').map((block) => block.id));
+  return { text: `${kept.join('\n')}\n`, session, model: parsed[cut].message.model ?? null,
+    startedAt: parsed.slice(0, cut).reverse().find((line) => line?.timestamp && ['user', 'assistant'].includes(line.type))?.timestamp ?? null,
+    priorCalls, edited: [...edited], missing: Object.keys(results).filter((id) => !edited.has(id)) };
 }

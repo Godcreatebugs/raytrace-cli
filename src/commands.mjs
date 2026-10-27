@@ -6,7 +6,7 @@ import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig, writeConfig } from './config.mjs';
 import { healthy, portInUse, runningPid, start, status, stop } from './proxy-process.mjs';
 import { HOOK_COMMAND, hookState, setHook } from './claude-code.mjs';
-import { confirm, interactive } from './prompt.mjs';
+import { askSecret, confirm, interactive } from './prompt.mjs';
 
 const say = (line = '') => console.log(line);
 const CLOUD_URL = 'https://app.raytracer.si';
@@ -76,7 +76,8 @@ export async function setup(flags) {
 export async function startCommand({ open = false } = {}) {
   const result = await start();
   const url = `http://127.0.0.1:${result.port}`;
-  say(result.started ? `RayTrace is running: ${url}` : `RayTrace was already running: ${url}`);
+  say(result.replaced ? `RayTrace restarted with this version (an older one was running): ${url}`
+    : result.started ? `RayTrace is running: ${url}` : `RayTrace was already running: ${url}`);
   if (!result.started && !result.pid) say('  (started outside this CLI, e.g. from the RayTrace repo; `raytrace stop` will not stop it)');
   say(`  Logs: ${paths.proxyLog}`);
   if (open) openUrl(url);
@@ -104,6 +105,56 @@ export async function openCommand() {
   say(`Opening ${state.url}`);
 }
 
+// ------------------------------------------------------------------ keys
+
+// The keys the dashboard's AI features run on: the user's own, kept in
+// config.env (readable only by them) and used only by the proxy here.
+const KEYS = {
+  openrouter: { name: 'OPENROUTER_API_KEY', label: 'OpenRouter', where: 'https://openrouter.ai/keys',
+    turnsOn: 'step summaries, command descriptions, run recaps and Chain of thought, and `raytrace codex`',
+    models: 'Qwen3 Coder (Chain of thought), gpt-oss-120b (summaries), Claude Sonnet 5.5 (recaps)' },
+  typesafe: { name: 'TYPESAFE_API_KEY', label: 'TypeSafe (Jev)', where: 'your TypeSafe account',
+    turnsOn: 'ranking Chain of thought\'s causes and rating each command\'s severity' },
+};
+const masked = (value) => (value ? `set (…${value.slice(-4)})` : 'not set');
+
+/**
+ * `raytrace key` lists the keys; `raytrace key <openrouter|typesafe>` asks for
+ * one (typed without echo, or piped in) and saves it; `--remove` deletes it.
+ * The key is never taken as an argument, so it stays out of shell history.
+ */
+export async function keyCommand(which, flags) {
+  const config = readConfig();
+  if (!which) {
+    for (const [id, key] of Object.entries(KEYS)) say(`${id.padEnd(11)} ${masked(config[key.name])}   ${key.turnsOn}`);
+    say('\nAdd one: raytrace key openrouter   (or typesafe). Remove one: raytrace key openrouter --remove');
+    return;
+  }
+  const key = KEYS[which];
+  if (!key) throw new Error(`Unknown key "${which}". Use: raytrace key openrouter | typesafe`);
+  let value = '';
+  if (!flags.remove) {
+    if (interactive()) {
+      say(`Your ${key.label} key turns on ${key.turnsOn}. Get one at ${key.where}.`);
+      if (key.models) say(`Calls are made on your key and billed to you; models: ${key.models}.`);
+      value = await askSecret(`${key.label} key: `);
+    } else {
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      value = Buffer.concat(chunks).toString('utf8').trim();
+    }
+    if (!value) throw new Error('No key given; nothing changed.');
+    if (/\s/.test(value)) throw new Error('That does not look like a key (it has spaces); nothing changed.');
+  }
+  const next = { ...config, [key.name]: value };
+  if (which === 'openrouter') next.RAYTACE_PROVIDER = value ? 'openrouter' : 'native';
+  writeConfig(next);
+  say(value ? `${key.label} key saved in ${paths.config} (only you can read it).` : `${key.label} key removed.`);
+  // A proxy this CLI started is restarted so the key applies.
+  if (runningPid()) { await stop(); await start(); say('RayTrace restarted with it.'); }
+  else if (await healthy(portOf(readConfig()))) say('A RayTrace proxy started outside this CLI is running; restart it to use this.');
+}
+
 // ------------------------------------------------------------------ doctor
 
 export async function doctor() {
@@ -125,13 +176,24 @@ export async function doctor() {
   line(hooks.installed ? true : null, 'claude code hook', hooks.installed ? `installed in ${hooks.file}` : 'not installed (raytrace setup)');
   if (hooks.repoHook) line(null, 'repo hook', 'the RayTrace repo\'s hook is also installed; sessions are reported twice');
 
-  line(config.OPENROUTER_API_KEY ? true : null, 'openrouter', config.OPENROUTER_API_KEY ? 'key set: summaries and codex on' : 'no key: summaries and codex off');
+  line(config.OPENROUTER_API_KEY ? true : null, 'openrouter', config.OPENROUTER_API_KEY ? 'key set: AI features on' : 'no key: AI features off (raytrace key openrouter)');
 
   const pid = runningPid();
   if (await healthy(port)) line(true, 'proxy', `running on :${port}${pid ? ` (pid ${pid})` : ' (started outside this CLI)'}`);
   else if (await portInUse(port)) line(false, 'proxy', `port ${port} is held by something that is not RayTrace`);
   else line(null, 'proxy', `stopped (port ${port} free)`);
   line(existsSync(paths.database) ? true : null, 'database', existsSync(paths.database) ? `${paths.database} (${(statSync(paths.database).size / 1e6).toFixed(1)} MB)` : 'not created yet; it is made on first start');
+
+  // Local sandboxes are optional: what they lack is shown, not counted as a problem.
+  say('\nLocal sandboxes (raytrace sandbox create --local):');
+  const { checks } = await import('./lima.mjs');
+  const { vmStatus } = await import('./local-sandbox.mjs');
+  let vm = null;
+  try { vm = vmStatus(); } catch { /* no Lima yet */ }
+  const rows = await checks({ vmRunning: vm === 'Running' });
+  for (const { ok, label, detail, fix } of rows) say(`${ok === false ? '✗' : ok === null ? '·' : '✓'} ${label.padEnd(22)} ${detail}${fix ? `\n  ${''.padEnd(22)} fix: ${fix}` : ''}`);
+  if (vm) say(`· ${'vm'.padEnd(22)} raytrace: ${vm.toLowerCase()}`);
+  else if (rows.every((row) => row.ok !== false)) say(`· ${'vm'.padEnd(22)} not created yet; the first local sandbox makes it`);
 
   say(problems ? `\n${problems} problem${problems === 1 ? '' : 's'} found.` : '\nNo problems found.');
   if (problems) process.exitCode = 1;
@@ -165,7 +227,14 @@ export async function uninstall(flags) {
   if (hookState().installed) say(`Removed the Claude Code hook from ${setHook({ remove: true })}.`);
   if (existsSync(paths.home)) {
     const purge = flags.purge || (!yes && await confirm(`Delete ${paths.home} (recorded sessions and settings)?`, false));
-    if (purge) { rmSync(paths.home, { recursive: true, force: true }); say(`Deleted ${paths.home}.`); }
+    if (purge) {
+      // Before the folder goes: the Lima that RayTrace downloaded, which removes the VM, is in it.
+      const { deleteVm } = await import('./local-sandbox.mjs');
+      try { if (deleteVm()) say('Deleted the local sandbox VM (raytrace) and its sandboxes.'); }
+      catch (error) { say(`The local sandbox VM was not deleted (${error.message.split('\n')[0]}); limactl delete --force raytrace removes it.`); }
+      rmSync(paths.home, { recursive: true, force: true });
+      say(`Deleted ${paths.home}.`);
+    }
     else say(`Kept ${paths.home}.`);
   }
   say('To remove the command itself: npm uninstall -g @raytrace/cli');

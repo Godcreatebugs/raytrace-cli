@@ -73,3 +73,39 @@ export function omitToolChunkIds(value) {
     return [key, omitToolChunkIds(item)];
   }));
 }
+
+// --- native tools ------------------------------------------------------------------
+
+// Tools that work on files inside the agent: no program starts, so a sandbox
+// has no process to see for them. Claude Code's, and Codex's apply_patch.
+const FILE_TOOLS = { Read: 'read', NotebookRead: 'read', Write: 'wrote', Edit: 'wrote', MultiEdit: 'wrote', NotebookEdit: 'wrote',
+  apply_patch: 'wrote', Glob: 'listed', LS: 'listed', Grep: 'listed' };
+// Others that run inside the agent too; so does every MCP tool (mcp__server__tool).
+const AGENT_TOOLS = new Set(['TodoWrite', 'TodoRead', 'WebFetch', 'WebSearch', 'Task', 'Agent', 'Skill', 'ToolSearch', 'AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode',
+  'update_plan', 'view_image', 'web_search']);
+
+function toolArgs(argsRaw) {
+  if (argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw)) return argsRaw;
+  try { const parsed = JSON.parse(String(argsRaw ?? '')); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null; } catch { return null; }
+}
+
+/** How a tool call runs: 'file' (a native file tool) and 'agent' start no
+ * program; anything else is a 'command' the sandbox can be expected to see. */
+export function callKind(name) {
+  return name in FILE_TOOLS ? 'file' : AGENT_TOOLS.has(name) || String(name ?? '').startsWith('mcp__') ? 'agent' : 'command';
+}
+
+/** The file a native file tool worked on, stated by its arguments rather than
+ * read out of a command line; null for any other tool. */
+export function nativeFileOperation(name, argsRaw) {
+  if (!(name in FILE_TOOLS)) return null;
+  const args = toolArgs(argsRaw) ?? {};
+  const path = [args.file_path, args.notebook_path, args.path].find((value) => typeof value === 'string' && value);
+  // A search that prints matching lines puts file contents in context.
+  const op = name === 'Grep' && args.output_mode === 'content' ? 'read' : FILE_TOOLS[name];
+  const pattern = typeof args.pattern === 'string' ? args.pattern : null;
+  if (!path && !pattern) return null;
+  const range = name === 'Read' && Number.isFinite(args.offset) ? `, from line ${args.offset}` : '';
+  return { op, path: path ?? '.',
+    text: name === 'Grep' ? `"${pattern ?? ''}" in ${path ?? '.'}` : name === 'Glob' ? `${pattern ?? '*'}${path ? ` in ${path}` : ''}` : `${path}${range}` };
+}

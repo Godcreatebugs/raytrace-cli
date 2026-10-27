@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { ContextItem } from './types';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 
-const API = '/raytace';
+const API = 'http://127.0.0.1:8797/raytace';
 export type SelectedStep = { exchange_id?: string; output_index?: number; title: string; detail: string };
 type Decision = { label: string; text: string; calls: { name: string; arguments: unknown }[] };
 type Step = { explanation_generated: boolean; explanation_model: string; exchange_id: string; output_index: number; model: string; decision: Decision; replay_reason: string | null; evidence: ContextItem[]; hypotheses: { evidence_id: string; title: string; explanation: string; excerpt: string }[] };

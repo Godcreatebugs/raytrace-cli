@@ -1,8 +1,10 @@
 'use client';
 
 // A graph view of one trace: one node per "Model request #N", connected in
-// sequence, each edge annotated with how many of the tool calls that request
-// proposed the agent reported as succeeding.
+// sequence, each edge annotated with whether the tool call(s) that request
+// proposed were actually confirmed executed (real ground truth from
+// proxy/execution-correlation.mjs — see raytace-proxy.mjs's readTraces()
+// callVerifications), not a text-scanning guess.
 //
 // Deliberately sequential-only for now: Codex resends the FULL conversation
 // history on every turn, so naively drawing an edge for every place a past
@@ -15,9 +17,11 @@
 import { useMemo } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, Handle, Position, type Node, type Edge, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { type Trace, type TraceBlock, type SummaryState } from './types';
-import { completionFailed, reportedResult } from './trace-utils';
+import { type CallVerification, type Trace, type TraceBlock, type SummaryState } from './types';
+import { requestSummaryText } from './graph-summary';
+import { completionFailed } from './trace-utils';
 import { money, duration } from './request-metrics';
+import { useTheme } from './theme';
 
 const NODE_WIDTH = 236;
 const NODE_SPACING = 300;
@@ -25,12 +29,11 @@ const NODE_SPACING = 300;
 type NodeData = {
   number: number;
   summaryText: string;
-  summaryLoading: boolean;
   failed: boolean | null;
   cost: number | null;
   costEstimated: boolean;
   durationMs: number | null;
-  okCount: number;
+  verifiedCount: number;
   totalCalls: number;
   onClick: () => void;
 };
@@ -45,11 +48,11 @@ function RequestNode({ data }: NodeProps<Node<NodeData>>) {
         <span className="graph-node-num">Request #{data.number}</span>
         {data.failed !== null && <span className={`graph-node-status ${data.failed ? 'fail' : 'ok'}`}>{data.failed ? 'Failed' : 'OK'}</span>}
       </div>
-      <p className="graph-node-summary">{data.summaryLoading ? 'Summarizing…' : data.summaryText || 'No summary yet.'}</p>
+      <p className="graph-node-summary">{data.summaryText}</p>
       <div className="graph-node-meta">
         <span>{money(data.cost, data.costEstimated)}</span>
         <span>{duration(data.durationMs)}</span>
-        {data.totalCalls > 0 && <span className={data.okCount === data.totalCalls ? 'graph-node-verified-all' : 'graph-node-verified-partial'} title="Calls the agent reported as succeeding">{data.okCount}/{data.totalCalls} ok</span>}
+        {data.totalCalls > 0 && <span className={data.verifiedCount === data.totalCalls ? 'graph-node-verified-all' : 'graph-node-verified-partial'}>{data.verifiedCount}/{data.totalCalls} verified</span>}
       </div>
     </button>
   );
@@ -58,12 +61,13 @@ function RequestNode({ data }: NodeProps<Node<NodeData>>) {
 const nodeTypes = { request: RequestNode };
 
 export function TraceGraph({ trace, blocks, summaries, onSelectStep }: { trace: Trace; blocks: TraceBlock[]; summaries: Record<string, SummaryState>; onSelectStep: (index: number) => void }) {
+  const theme = useTheme();
   const { nodes, edges } = useMemo(() => {
     const requestMetricById = new Map((trace.requests || []).map((request) => [request.id, request]));
-    const callsByExchangeId = new Map<string, { ok: boolean; name: string }[]>();
+    const callsByExchangeId = new Map<string, CallVerification[]>();
     for (const call of trace.callVerifications || []) {
       const list = callsByExchangeId.get(call.exchange_id) || [];
-      list.push({ ok: reportedResult(trace.events, call.call_id).state === 'ok', name: call.name });
+      list.push(call);
       callsByExchangeId.set(call.exchange_id, list);
     }
 
@@ -78,13 +82,12 @@ export function TraceGraph({ trace, blocks, summaries, onSelectStep }: { trace: 
         position: { x: index * NODE_SPACING, y: 0 },
         data: {
           number: block.number,
-          summaryText: summary?.status === 'ready' ? summary.text : '',
-          summaryLoading: summary?.status === 'loading',
+          summaryText: requestSummaryText(calls, summary),
           failed,
           cost: metric?.cost ?? null,
           costEstimated: metric?.costEstimated ?? false,
           durationMs: metric?.durationMs ?? null,
-          okCount: calls.filter((call) => call.ok).length,
+          verifiedCount: calls.filter((call) => call.verified).length,
           totalCalls: calls.length,
           onClick: () => onSelectStep(block.items[0]?.index ?? 0),
         },
@@ -97,18 +100,18 @@ export function TraceGraph({ trace, blocks, summaries, onSelectStep }: { trace: 
       const from = blocks[i];
       const to = blocks[i + 1];
       const calls = callsByExchangeId.get(from.exchangeId) || [];
-      const okCount = calls.filter((call) => call.ok).length;
-      const allOk = calls.length > 0 && okCount === calls.length;
-      const someOk = okCount > 0 && okCount < calls.length;
-      const label = calls.length ? `${okCount}/${calls.length} ok` : undefined;
+      const verifiedCount = calls.filter((call) => call.verified).length;
+      const allVerified = calls.length > 0 && verifiedCount === calls.length;
+      const someVerified = verifiedCount > 0 && verifiedCount < calls.length;
+      const label = calls.length ? `${verifiedCount}/${calls.length} verified` : undefined;
       graphEdges.push({
         id: `seq-${from.exchangeId}-${to.exchangeId}`,
         source: from.exchangeId,
         target: to.exchangeId,
         label,
-        style: { stroke: allOk ? '#3d7a5e' : someOk ? '#8a7233' : calls.length ? '#7a3d45' : '#2a3951' },
-        labelStyle: { fill: '#c7d4e8', fontSize: 10 },
-        labelBgStyle: { fill: '#0d1726' },
+        style: { stroke: allVerified ? '#3d7a5e' : someVerified ? '#8a7233' : calls.length ? '#7a3d45' : 'var(--line)' },
+        labelStyle: { fill: 'var(--muted)', fontSize: 10 },
+        labelBgStyle: { fill: 'var(--deep)' },
       });
     }
     return { nodes: graphNodes, edges: graphEdges };
@@ -118,10 +121,10 @@ export function TraceGraph({ trace, blocks, summaries, onSelectStep }: { trace: 
 
   return (
     <div className="graph-canvas">
-      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView proOptions={{ hideAttribution: true }} colorMode="dark">
-        <Background color="#1d2b40" gap={24} />
+      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView proOptions={{ hideAttribution: true }} colorMode={theme}>
+        <Background color={theme === 'dark' ? '#30343a' : '#d5d8dc'} gap={24} />
         <Controls showInteractive={false} />
-        <MiniMap pannable zoomable style={{ background: '#0a1220' }} maskColor="rgba(9,17,30,0.75)" nodeColor="#1b2b42" />
+        <MiniMap pannable zoomable style={{ background: 'var(--deep)' }} maskColor={theme === 'dark' ? 'rgba(17,19,21,0.75)' : 'rgba(255,255,255,0.75)'} nodeColor={theme === 'dark' ? '#30343a' : '#d5d8dc'} />
       </ReactFlow>
     </div>
   );

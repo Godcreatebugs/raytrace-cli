@@ -49,9 +49,16 @@ export function turnSpan(requests: RequestMetric[] | undefined): number | null {
   return starts.length && [...starts, ...ends].every(Number.isFinite) ? Math.max(...ends) - Math.min(...starts) : null;
 }
 
+/** The trace's time window for the sandbox query, with a second of slack each
+ * side: a process can start just before a request is logged. */
+export function turnWindow(requests: RequestMetric[] | undefined): { since?: number; until?: number } {
+  const times = (requests ?? []).flatMap((r) => [Date.parse(r.startedAt), r.completedAt ? Date.parse(r.completedAt) : NaN]).filter(Number.isFinite);
+  return times.length ? { since: Math.min(...times) - 1000, until: Math.max(...times) + 1000 } : {};
+}
+
 /** What the agent's runner said happened to one call, read from the tool
  * result it sent back. Codex writes "Process exited with code N" or, when its
- * own permission policy refused the command, "exec_command failed: … Rejected(". */
+ * sandbox policy refused the command, "exec_command failed: … Rejected(". */
 export type Reported = { state: 'ok' | 'failed' | 'rejected' | 'none'; code: number | null; output: string };
 export function reportedResult(events: TraceEvent[], callId: string): Reported {
   const event = events.find((item) => {
@@ -65,4 +72,18 @@ export function reportedResult(events: TraceEvent[], callId: string): Reported {
   const code = Number(output.match(/Process exited with code (\d+)/)?.[1] ?? NaN);
   if (Number.isFinite(code)) return { state: code === 0 ? 'ok' : 'failed', code, output };
   return { state: /failed/i.test(output.slice(0, 80)) ? 'failed' : 'ok', code: null, output };
+}
+
+/** Where a run happened, and whether the Playground can fork it (and why
+ * not). One rule for every view that offers or explains forking. */
+export type RunPlace = { where: 'sandbox' | 'mac' | 'fork'; label: string; forkable: boolean; reason: string | null };
+export function runPlace(trace: { provider: string; sandboxId?: string; forkId?: string }): RunPlace {
+  if (trace.forkId) return { where: 'fork', label: 'Fork', forkable: false,
+    reason: 'This is a Playground fork’s own run. Fork from the original prompt instead.' };
+  const inSandbox = Boolean(trace.sandboxId?.startsWith('rtp-'));
+  if (!inSandbox) return { where: 'mac', label: 'Mac', forkable: false,
+    reason: 'This prompt ran on your machine, so it can’t be forked: nothing recorded how your files looked at each step, and replaying it would touch your real project. Run Claude Code in a local sandbox (raytrace sandbox create --local) to get runs you can fork.' };
+  if (trace.provider !== 'claude-code') return { where: 'sandbox', label: 'Sandbox', forkable: false,
+    reason: 'Only Claude Code runs can be forked so far; this one ran a different agent in the sandbox.' };
+  return { where: 'sandbox', label: 'Sandbox', forkable: true, reason: null };
 }
