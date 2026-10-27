@@ -1,5 +1,7 @@
 // `raytrace sandbox`: cloud sandboxes, through RayTrace's API
-// (https://api.raytracer.si; RAYTRACE_API_URL points elsewhere).
+// (https://api.raytracer.si; RAYTRACE_API_URL points elsewhere), or with
+// --local on this machine (local-sandbox.mjs). A local sandbox's id is
+// recognised wherever an id is given, so connect/stop/destroy need no flag.
 //
 // The project is packed here, so files that must stay on this machine never
 // leave it, then uploaded once; RayTrace creates an isolated sandbox from it
@@ -13,7 +15,8 @@ import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
 import { accessToken, account, login } from './auth.mjs';
 import { readConfig } from './config.mjs';
-import { ask, interactive } from './prompt.mjs';
+import { ask, confirm, interactive } from './prompt.mjs';
+import * as local from './local-sandbox.mjs';
 
 const say = (line = '') => console.log(line);
 // What one project upload may be. RayTrace's API holds the dashboard's folder
@@ -125,8 +128,13 @@ export async function create(flags) {
   if (top.status !== 0) throw new Error('Run this from inside a Git repository.');
   const root = top.stdout.trim();
   const name = flags.name || basename(root);
+  // What the machine lacks is said before the project is read, and Lima fetched if agreed.
+  const localName = flags.local ? local.sandboxName(flags, root) : null;
+  if (flags.local) await local.preflight(flags, { confirm, interactive });
   const { files, skipped, total } = projectFiles(root);
   if (!files.length) throw new Error('Nothing to upload.');
+  // The same files, packed the same way, as a cloud sandbox gets: only the copy stays here.
+  if (flags.local) return local.create(localName, { root, files, skipped, total, archive: await pack(root, files) });
   say(`Packing ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root}`);
   if (skipped.length) say(`Not uploaded (${skipped.length}): ${skipped.slice(0, 8).join(', ')}${skipped.length > 8 ? ', ...' : ''}`);
   const archive = await pack(root, files);
@@ -141,7 +149,8 @@ export async function create(flags) {
   say(`Open it:  raytrace connect ${box.id}`);
 }
 
-export async function list() {
+export async function list(flags = {}) {
+  if (flags.local) return local.list();
   const boxes = (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
   if (!boxes.length) { say('No sandboxes. Create one from a Git repository: raytrace sandbox create'); return; }
   for (const box of boxes) {
@@ -152,10 +161,17 @@ export async function list() {
   }
 }
 
-export async function start(id) { const box = await call('POST', `/v1/sandboxes/${await pickId(id)}/start`); say(`${box.id} running`); }
-export async function stop(id) { const box = await call('POST', `/v1/sandboxes/${await pickId(id)}/stop`); say(`${box.id} stopped; its files are kept`); }
+export async function start(id, flags = {}) {
+  if (flags.local || local.isLocal(id)) return local.start(id);
+  const box = await call('POST', `/v1/sandboxes/${await pickId(id)}/start`); say(`${box.id} running`);
+}
+export async function stop(id, flags = {}) {
+  if (flags.local || local.isLocal(id)) return local.stop(id);
+  const box = await call('POST', `/v1/sandboxes/${await pickId(id)}/stop`); say(`${box.id} stopped; its files are kept`);
+}
 
 export async function destroy(id, flags) {
+  if (flags.local || local.isLocal(id)) return local.destroy(id, flags, { ask, interactive });
   id = await pickId(id);
   if (!flags.yes) {
     if (!interactive()) throw new Error('Pass --yes to destroy without a prompt.');
@@ -168,8 +184,10 @@ export async function destroy(id, flags) {
 
 /** An interactive terminal in the sandbox, carried over one upgraded HTTP request.
  * `raytrace connect <id>` and `raytrace sandbox shell [id]` are the same thing. */
-export async function shell(id) {
+export async function shell(id, flags = {}) {
   if (!interactive()) throw new Error('Connecting to a sandbox needs a terminal.');
+  // With no id and no cloud sign-in, the one local sandbox is the likely one.
+  if (flags.local || local.isLocal(id) || (!id && Object.keys(local.registry()).length && !account())) return local.shell(id);
   id = await pickId(id);
   const { url, key } = await api();
   const { stdin, stdout } = process;

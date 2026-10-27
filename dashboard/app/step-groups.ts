@@ -1,15 +1,21 @@
 // Folds runs of near-identical tool calls into one step: six greps for the
 // same names, one model response each, read as "searched 6 times". The rule
 // is deliberately strict and deterministic -- consecutive calls of the same
-// kind (search, read, edit, test) that share a target -- so a group never
-// hides a step that did something different. Display only: the calls, their
-// evidence and their attributions are unchanged underneath.
-import { type CallVerification, type Trace } from './types';
+// category that share a target -- so a group never hides a step that did
+// something different. Display only: the calls, their evidence and their
+// attributions are unchanged underneath.
+//
+// The category is the server's (proxy/call-category.mjs), the same one the
+// Tool column shows. This file only works out what a call was aimed at (the
+// file, the search terms, the test command); the shape it reads that from
+// stands in for the category on a server too old to send one.
+import { type CallCategory, type CallVerification, type Trace } from './types';
 import { reportedResult } from './trace-utils';
+import { CATEGORY_LABEL } from './call-labels';
 
-export type StepKind = 'search' | 'read' | 'edit' | 'test' | 'other';
-export type Classified = { kind: StepKind; targets: string[]; display: string[]; wide: boolean };
-export type StepGroup = { id: string; kind: StepKind; calls: CallVerification[]; first: number; display: string[]; wide: number };
+type Shape = 'search' | 'read' | 'edit' | 'test' | 'other';
+export type Classified = { kind: Shape; targets: string[]; display: string[]; wide: boolean };
+export type StepGroup = { id: string; kind: CallCategory | null; calls: CallVerification[]; first: number; display: string[]; wide: number };
 
 /** The call's arguments as an object, read from its "Tool call" event. */
 export function callArgs(trace: Trace, call: CallVerification): Record<string, unknown> | null {
@@ -130,17 +136,18 @@ const overlaps = (a: string[], b: string[]) => a.some((x) => b.some((y) => x ===
 
 /**
  * Every call in order, each in exactly one group; a group of one is an
- * ordinary step. A call joins the run before it when it is the same kind (not
- * "other"), shares a target with the run, and the previous call was not
- * refused by the agent's permission policy.
+ * ordinary step. A call joins the run before it when it is the same category
+ * (a known one), shares a target with the run, and the previous call was not
+ * refused by the sandbox policy.
  */
 export function groupSteps(trace: Trace, calls: CallVerification[]): StepGroup[] {
   const groups: (StepGroup & { targets: string[] })[] = [];
   calls.forEach((call, index) => {
     const info = classify(call, callArgs(trace, call));
+    const kind: CallCategory | null = call.category === undefined ? (info.kind === 'other' ? null : info.kind) : call.category === 'unsure' ? null : call.category;
     const current = groups.at(-1);
     const previous = current?.calls.at(-1);
-    const joins = current && info.kind !== 'other' && current.kind === info.kind && overlaps(current.targets, info.targets)
+    const joins = current && kind && current.kind === kind && overlaps(current.targets, info.targets)
       && previous && reportedResult(trace.events, previous.call_id).state !== 'rejected';
     if (joins) {
       current.calls.push(call);
@@ -148,14 +155,13 @@ export function groupSteps(trace: Trace, calls: CallVerification[]): StepGroup[]
       for (const word of info.display) if (!current.display.some((shown) => shown.toLowerCase() === word.toLowerCase())) current.display.push(word);
       if (info.wide) current.wide += 1;
     } else {
-      groups.push({ id: call.call_id, kind: info.kind, calls: [call], first: index + 1, targets: info.targets, display: [...info.display], wide: info.wide ? 1 : 0 });
+      groups.push({ id: call.call_id, kind, calls: [call], first: index + 1, targets: info.targets, display: [...info.display], wide: info.wide ? 1 : 0 });
     }
   });
   return groups.map(({ targets: _targets, ...group }) => group);
 }
 
-const VERB: Record<StepKind, string> = { search: 'Searched', read: 'Read', edit: 'Edited', test: 'Ran', other: 'Ran' };
-const KIND_LABEL: Record<StepKind, string> = { search: 'search', read: 'read', edit: 'edit', test: 'test', other: 'step' };
+const VERB: Partial<Record<CallCategory, string>> = { search: 'Searched', read: 'Read', write: 'Wrote', edit: 'Edited', delete: 'Removed or moved', web: 'Fetched' };
 
 /** "#1–6", "Searched 6 times for effectsText, groupStates, …", the last
  * attempt's outcome, and anything a reader should not miss while collapsed. */
@@ -163,20 +169,21 @@ export function groupSummary(group: StepGroup, trace: Trace) {
   const count = group.calls.length;
   const shown = group.display.slice(0, 3).join(', ') + (group.display.length > 3 ? ', …' : '');
   const label = group.kind === 'search' ? `${VERB.search} ${count} times for ${shown}`
-    : group.kind === 'test' ? `${VERB.test} ${shown} ${count} times`
-      : `${VERB[group.kind]} ${shown} ${count} times`;
+    : `${(group.kind && VERB[group.kind]) ?? 'Ran'} ${shown} ${count} times`;
   const results = group.calls.map((call) => reportedResult(trace.events, call.call_id));
   const last = results.at(-1)!;
   const lines = last.output.trim() ? last.output.trim().split('\n').length : 0;
   const outcome = last.state === 'failed' ? 'last: failed' : last.state === 'rejected' ? 'last: refused' : lines ? `last: ${lines} line${lines === 1 ? '' : 's'}` : 'last: no output';
   const failed = results.filter((result) => result.state === 'failed').length;
+  const changed = group.calls.reduce((sum, call) => sum + (call.snapshot?.changed ? call.snapshot.changes.length : 0), 0);
   const flags = [
     group.wide ? `${group.wide} searched the whole filesystem` : '',
     failed ? `${failed} failed` : '',
+    changed ? `${changed} file change${changed === 1 ? '' : 's'}` : '',
   ].filter(Boolean);
   // Earlier attempts that came back empty or failed explain why it kept going.
   const earlier = results.slice(0, -1);
   const fruitless = earlier.length > 0 && earlier.every((result) => result.state === 'failed' || result.state === 'rejected' || !result.output.trim());
   const repeated = count > 1 ? `Repeated ${count - 1} time${count === 2 ? '' : 's'}${fruitless ? ' because earlier attempts found nothing or failed' : ': each retry followed the previous attempt\u2019s result'}.` : null;
-  return { range: count > 1 ? `#${group.first}–${group.first + count - 1}` : `#${group.first}`, kind: KIND_LABEL[group.kind], label, outcome, flags, repeated };
+  return { range: count > 1 ? `#${group.first}–${group.first + count - 1}` : `#${group.first}`, kind: group.kind ? CATEGORY_LABEL[group.kind] : 'Step', label, outcome, flags, repeated };
 }

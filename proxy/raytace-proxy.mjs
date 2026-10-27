@@ -1,24 +1,36 @@
 #!/usr/bin/env node
 import { requestMetrics } from './request-metrics.mjs';
+import { redact, parseSseResponse } from './capture.mjs';
 /** Local API recorder. Point a compatible client at http://127.0.0.1:8797. */
 import { createServer } from 'node:http';
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { realpathSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { join, dirname, resolve, extname, sep } from 'node:path';
 import { exchangesFromTranscript, parseTranscript } from './claude-code-adapter.mjs';
-import { evidenceFor, replayEligibility, createExperiment, runExperiment, outcome, proposedCommand } from './experiment-engine.mjs';
+import { replayEligibility, createExperiment, runExperiment } from './experiment-engine.mjs';
 import { loadEnvFile } from 'node:process';
 import { providerConfig, routeRequest, selectModel } from './providers.mjs';
-import { latestSessionRows } from './prompt-traces.mjs';
 import { inspectStep, createStepRun, runDecision } from './step-lab.mjs';
 import { executeSequence } from './execution-runner.mjs';
 import { explanationRequest, parseExplanations } from './explanations.mjs';
 import { summaryRequest, parseSummary, resultText } from './summaries.mjs';
-import { omitToolChunkIds, toolResultStatus } from './tool-metadata.mjs';
+import { fold as foldEvents, describeAll, undescribed, describeRequest, parseDescriptions, attributeMarked } from './exec-narrative.mjs';
+import { ingestExecutions, attributeLateProcesses } from './runtime-attribution.mjs';
+import { readTraces as traceView } from './trace-view.mjs';
+import { categoryResolver } from './call-category.mjs';
+import { startGvisorForwarder } from './gvisor-forwarder.mjs';
+import { startPlayground, FORK_ID } from './playground.mjs';
+import { omitToolChunkIds } from './tool-metadata.mjs';
 import { openEvidenceStore } from './evidence-store.mjs';
+import { startSandboxBridge } from './sandbox-bridge.mjs';
+import { localSandboxes, VM } from './local-sandboxes.mjs';
+import { typesafeConfig, systemOne } from './typesafe.mjs';
 import { promptContext, contextItemText, contextSummaryRequest, parseContextSummary } from './prompt-context.mjs';
+import { recapOutline, recapRequest, recapText, parseRecap, DEFAULT_OBSERVER } from './run-recap.mjs';
+import { groupByCall, assessmentRequests, combineGroup, rulesOnly, withProbabilities } from './call-assessment.mjs';
+import { prepareStep, attributionKey, proposerRequest, parseProposals, candidates, jevRequests, combine, withoutJev } from './step-attribution.mjs';
 
 try { loadEnvFile(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const routing = providerConfig();
@@ -30,9 +42,15 @@ const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
+// The evidence viewer of the local sandbox VM (worker/sandbox/viewer.py),
+// which Lima forwards here.
+const EVIDENCE_VIEWER = process.env.RAYTACE_EVIDENCE_VIEWER || 'http://127.0.0.1:8798';
 // The CLI sets RAYTACE_DATA_DIR (~/.raytrace); run by hand it keeps ./.raytace.
 const dataDir = process.env.RAYTACE_DATA_DIR || join(process.cwd(), '.raytace');
 const store = process.env.RAYTACE_STORE || join(dataDir, 'events.jsonl');
+// The local sandboxes (raytrace sandbox create --local): in place of raytace's sandbox manager.
+const sandboxes = localSandboxes({ dataDir });
+const NO_VM = `Local sandbox VM (${VM}) not reachable. Start a sandbox with: raytrace sandbox start <name>`;
 const maxBodyBytes = Number(process.env.RAYTACE_MAX_BODY_BYTES || 2_000_000);
 const liveExchanges = new Map(); // Credentials stay in process memory, never in the event log.
 const jobs = new Map();
@@ -47,13 +65,57 @@ function trustedOrigin(origin) {
   try { const url = new URL(origin); return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname); } catch { return false; }
 }
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-function redact(value) {
-  if (Array.isArray(value)) return value.map(redact);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    /authorization|api[-_]?key|token|secret|password/i.test(key) ? [key, '[REDACTED]'] : [key, redact(item)],
-  ));
+// Command severity (Jev). Without TYPESAFE_API_KEY, or when a request fails,
+// only the rule floor is shown -- and only where a rule actually fired.
+const typesafe = typesafeConfig();
+const pendingAssessments = new Map();
+const ASSESS_CONCURRENCY = 4;
+
+async function mapLimit(items, limit, run) {
+  const results = Array.from({ length: items.length });
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const index = next++; results[index] = await run(items[index]); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
+
+async function assessGroup(group, context) {
+  if (!typesafe.enabled) return rulesOnly(group);
+  const { key, requests } = assessmentRequests(group, context, typesafe.model);
+  const cached = db.getCallAssessment(key);
+  if (cached) return withProbabilities(cached);
+  if (!pendingAssessments.has(key)) {
+    const task = (async () => {
+      const responses = await Promise.all(requests.map((request) => systemOne(typesafe, { state: request.state, questions: request.questions })));
+      const model = responses[0]?.model ?? typesafe.model;
+      const input_tokens = responses.reduce((sum, response) => sum + (response.usage?.input_tokens ?? 0), 0);
+      const result = { ...combineGroup(group, requests, responses), model, input_tokens };
+      db.putCallAssessment(key, group.call_id, model, { ...result, answers: responses.map((response) => response.answers) });
+      return result;
+    })().finally(() => pendingAssessments.delete(key));
+    pendingAssessments.set(key, task);
+  }
+  try { return await pendingAssessments.get(key); } catch (error) {
+    console.error('[raytace] Jev assessment unavailable:', error.message);
+    return rulesOnly(group);
+  }
+}
+
+/** Sets `severity` on each top-level command and returns call-level labels
+ * keyed by call id. Never throws: severity must not cost us the evidence. */
+async function assessCommands(commands) {
+  const groups = groupByCall(commands);
+  const contexts = db.toolCallContexts(groups.map((group) => group.call_id));
+  const results = await mapLimit(groups, ASSESS_CONCURRENCY, (group) => assessGroup(group, contexts.get(group.call_id) ?? null));
+  const labels = {};
+  groups.forEach((group, index) => {
+    const { severities, labels: callLabels } = results[index];
+    group.trees.forEach((tree, position) => { tree.root.severity = severities[position] ?? null; });
+    if (callLabels && group.call_id) labels[group.call_id] = callLabels;
+  });
+  return labels;
+}
+
 async function record(event) {
   const row = omitToolChunkIds(event);
   if (row.event_type === 'model.exchange' && row.span_id) db.recordExchange(row);
@@ -62,36 +124,6 @@ async function record(event) {
   if (archiveJsonl) { await mkdir(dirname(store), { recursive: true }); await appendFile(store, `${JSON.stringify(row)}\n`); }
 }
 function safeHeaders(headers) { const keep = ['content-type', 'anthropic-version', 'openai-beta', 'user-agent', 'x-request-id']; return Object.fromEntries(Object.entries(headers).filter(([key]) => keep.includes(key.toLowerCase()))); }
-function shortened(value, limit = 104) { const text = typeof value === 'string' ? value : JSON.stringify(value ?? ''); return text.length > limit ? `${text.slice(0, limit - 1)}…` : text; }
-function parseSseResponse(body) {
-  const events = [];
-  let completedResponse = null;
-  for (const frame of body.toString('utf8').replace(/\r\n/g, '\n').split('\n\n')) {
-    const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
-    if (!data || data === '[DONE]') continue;
-    try {
-      const event = JSON.parse(data);
-      events.push(event);
-      if (event.type === 'response.completed' && event.response) completedResponse = event.response;
-    } catch { /* retain the raw response hash when an SSE event is not JSON */ }
-  }
-  if (completedResponse) return completedResponse;
-  return events.length ? { stream: true, events } : null;
-}
-function toolKind(name) { const lower = name.toLowerCase(); return /search|rg|grep/.test(lower) ? 'search' : /read|open|cat|list/.test(lower) ? 'read' : /write|edit|patch|apply/.test(lower) ? 'edit' : 'test'; }
-function event(kind, title, detail, time, raw) { return { kind, title, detail, time, raw: JSON.stringify(raw, null, 2) }; }
-function publicOutput(item) {
-  // Reasoning items can contain opaque/private model state. Keep only the
-  // configuration and any explicit summary; never present hidden content as a trace.
-  if (item?.type === 'reasoning') return { type: 'reasoning', id: item.id, summary: item.summary ?? null, encrypted_content: item.encrypted_content ? '[present]' : undefined };
-  return item;
-}
-function extractText(item) {
-  const content = item?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) return content.map((part) => part?.text || part?.content || '').filter(Boolean).join(' ');
-  return item?.text || '';
-}
 async function invokeReplay(entry, payload, signal) {
   const headers = Object.fromEntries(Object.entries(entry.headers).filter(([key]) =>
     ['authorization', 'content-type', 'openai-organization', 'openai-project', 'openai-beta', 'user-agent'].includes(key.toLowerCase())));
@@ -106,50 +138,35 @@ async function invokeReplay(entry, payload, signal) {
   return response.headers.get('content-type')?.includes('text/event-stream') ? parseSseResponse(body) : JSON.parse(body.toString());
 }
 async function persistExperiment(job) { db.saveExperiment(redact(omitToolChunkIds(job))); }
-function splitExchange(row) {
-  const request = row.request?.payload || {}; const response = row.response?.payload || {};
-  // Preserve the date and UTC offset so each viewer can render their local time.
-  const started = new Date(row.timestamp).toISOString(); const completed = new Date(row.completed_at || row.timestamp).toISOString();
-  const input = Array.isArray(request.input) ? request.input : Array.isArray(request.messages) ? request.messages : [];
-  const output = Array.isArray(response.output) ? response.output : Array.isArray(response.content) ? response.content : [];
-  const toolCount = (request.tools || []).length + input.flatMap((item) => item?.tools || []).length;
-  const live = liveExchanges.get(row.span_id);
-  const reason = live ? replayEligibility(live) : 'Capture a fresh request after starting this proxy. Replay snapshots expire after 30 minutes or a restart.';
-  let decision = null; try { decision = outcome(response); } catch { /* incomplete capture */ }
-  const steps = [event('model', 'Context assembled', `${request.model || 'unknown model'} · ${input.length} input items · ${toolCount} available tools`, started, { exchange_id: row.span_id, model: request.model, stream: request.stream, input_items: input.length, tool_count: toolCount, reasoning: request.reasoning ?? null, replay_reason: reason, decision })];
-  for (const item of input) {
-    if (!/function_call_output|tool_result/i.test(item?.type || '')) continue;
-    const name = item.name || item.tool_name || item.call_id || 'tool';
-    steps.push(event(toolKind(name), `Tool result: ${name}`, toolResultStatus(item), started, item));
-  }
-  for (const [outputIndex, item] of output.entries()) {
-    if (item?.type === 'reasoning') {
-      const effort = response.reasoning?.effort || request.reasoning?.effort || 'model default';
-      steps.push(event('model', 'Reasoning phase', `Effort: ${effort}. Private reasoning content is intentionally not displayed.`, completed, publicOutput(item)));
-      continue;
-    }
-    const name = item?.name || item?.function?.name;
-    if (name && /function_call|tool_use|tool_call/i.test(item?.type || '')) {
-      const data = item.arguments || item.input || item.function?.arguments || '';
-      steps.push({ ...event(toolKind(name), `Tool call: ${name}`, shortened(data), completed, publicOutput(item)), exchange_id: row.span_id, output_index: outputIndex });
-      continue;
-    }
-    if (/message|text/i.test(item?.type || '')) steps.push({ ...event('model', 'Model answer', shortened(extractText(item), 180) || 'Message completed', completed, publicOutput(item)), exchange_id: row.span_id, output_index: outputIndex });
-  }
-  steps.push(event('model', `Exchange complete · ${row.response?.status || 'unknown'}`, `${row.request?.bytes || 0} B sent · ${row.response?.bytes || 0} B received`, completed, { response_status: response.status ?? null, http_status: row.response?.status ?? null, request_bytes: row.request?.bytes || 0, response_bytes: row.response?.bytes || 0, response_reasoning: response.reasoning ?? null }));
-  return steps;
-}
+/** The fields that identify and time the sandbox process a call ran as
+ * (db.divergence). All null when nothing was observed for the call. */
 // The trace list takes seconds to build for long sessions and is polled every
 // few seconds, mostly with nothing new: it is rebuilt only when the data
 // behind it changed (db.dataVersion), and one build serves every caller.
 // The body is serialized once per version too, and its version is its ETag,
 // so a poll with nothing new is answered 304 without sending anything.
+/** The trace view over this proxy's store; a replay is offered for exchanges
+ * still held in memory (liveExchanges). */
+function readTraces(includeHistory = false, { evidence = true } = {}) {
+  return traceView(db, { includeHistory, evidence, replayReason: (spanId) => {
+    const live = liveExchanges.get(spanId);
+    return live ? replayEligibility(live) : undefined;
+  } });
+}
 const traceCache = new Map(); // url -> { version, body: Promise<string> }
+// The Tool column's category for a shell command no rule places (Jev). An
+// answer changes no row dataVersion counts, so each one moves the view's
+// version itself: the next poll is rebuilt and not answered 304.
+const resolveCategories = categoryResolver({ config: typesafe, ask: (request) => systemOne(typesafe, request) });
+let categoryAnswers = 0;
 function cachedTraces(url) {
-  const version = db.dataVersion();
+  const version = `${db.dataVersion()}:${categoryAnswers}`;
   const hit = traceCache.get(url);
   if (hit?.version === version) return hit;
   const body = readTraces(url !== '/raytace/traces', { evidence: url !== '/raytace/traces?scope=history' })
+    .then((traces) => resolveCategories(traces, { get: (key) => db.getCallAssessment(key),
+      put: (key, model, value) => db.putCallAssessment(key, null, model, value),
+      onSettled: () => { categoryAnswers += 1; } }))
     .then((traces) => JSON.stringify({ traces }));
   const entry = { version, etag: `"${version}"`, body };
   traceCache.set(url, entry);
@@ -160,95 +177,6 @@ function cachedTraces(url) {
 /** `evidence: false` skips building each request's context items, the
  * costliest part (every request resends the conversation so far), for
  * callers that do not send them on. */
-async function readTraces(includeHistory = false, { evidence = true } = {}) {
-  const rows = db.exchangeRows({ history: includeHistory }).map(omitToolChunkIds);
-  // Rows arrive already grouped: each carries its turn as trace_id and the
-  // turn's prompt as promptTitle, decided once at capture (evidence-store.mjs).
-  const groupedRows = rows;
-  // The store already scopes the live view to the newest session; keep the
-  // filter so captures made before session tracking behave as they always did.
-  const exchangeRows = includeHistory ? groupedRows : (latestSessionRows(groupedRows).length ? latestSessionRows(groupedRows) : groupedRows);
-  // A tool call proposed in one captured exchange comes back as evidence (its
-  // result) in a later one. Index call_id -> the exchange that first proposed it
-  // so the UI can jump from "this evidence" to "the decision that produced it".
-  const origins = new Map();
-  for (const row of exchangeRows) {
-    const output = row.response?.payload?.output;
-    if (!Array.isArray(output)) continue;
-    for (const [outputIndex, item] of output.entries()) {
-      if (item?.call_id && /function_call|tool_use|tool_call/i.test(item?.type || '') && !origins.has(item.call_id)) {
-        origins.set(item.call_id, { call_id: item.call_id, trace_id: row.trace_id, exchange_id: row.span_id, output_index: outputIndex, name: item.name,
-          proposed: proposedCommand(item.arguments ?? item.input ?? item.function?.arguments ?? '') });
-      }
-    }
-  }
-  const grouped = new Map();
-  const shownResultsByTrace = new Map(); // trace_id -> Set(call_id) already rendered once
-  for (const row of exchangeRows) {
-    const trace = grouped.get(row.trace_id) || { id: row.trace_id, provider: row.provider, model: row.request?.payload?.model || 'unknown model', title: row.promptTitle, startedAt: row.timestamp, status: 'complete', events: [], evidence: [], requests: [] };
-    const shownResults = shownResultsByTrace.get(row.trace_id) || new Set();
-    shownResultsByTrace.set(row.trace_id, shownResults);
-    trace.requests.push({ id: row.span_id, model: row.request?.payload?.model || 'unknown', startedAt: row.timestamp, completedAt: row.completed_at || null, ...(row.metrics || requestMetrics(row)) });
-    // Rows are oldest-first, so the last request that produced text is the
-    // turn's final answer, and the last completion is when the turn ended.
-    trace.endedAt = row.completed_at || row.timestamp;
-    try { const text = outcome(row.response?.payload || {}).text; if (text) trace.answer = text; } catch { /* incomplete capture */ }
-    trace.events.push(...splitExchange(row).map((step) => {
-      if (!step.title.startsWith('Tool result:')) return step;
-      const raw = JSON.parse(step.raw); const origin = origins.get(raw.call_id);
-      // The tool result carries only a call_id and output, never the tool's
-      // name — fall back to the exchange that originally proposed the call,
-      // where the real name is known, instead of showing the raw id.
-      const label = origin?.name ? `Tool result: ${origin.name}` : step.title;
-      // The icon was classified from the same fallback name (usually the raw
-      // call_id, which never matches any category) — reclassify once the real
-      // tool name is known so the icon matches what the tool actually did.
-      const kind = origin?.name ? toolKind(origin.name) : step.kind;
-      // Clicking a result investigates the earlier decision to call that tool,
-      // using its pre-action context rather than its newly returned contents.
-      return { ...step, title: label, kind, ...(origin ? { exchange_id: origin.exchange_id, output_index: origin.output_index } : {}) };
-    }).filter((step) => {
-      if (!step.title.startsWith('Tool result:')) return true;
-      // Full conversation history is resent on every turn, so the same result
-      // would otherwise appear again in every later request's input — once is
-      // enough; the repeats carry no new information.
-      const raw = JSON.parse(step.raw);
-      if (!raw.call_id || !shownResults.has(raw.call_id)) { if (raw.call_id) shownResults.add(raw.call_id); return true; }
-      return false;
-    }));
-    for (const item of evidence ? evidenceFor(row.request?.payload, row.span_id) : []) {
-      const origin = item.call_id ? origins.get(item.call_id) : null;
-      trace.evidence.push({ ...item, origin: origin && origin.exchange_id !== row.span_id ? origin : null });
-    }
-    grouped.set(row.trace_id, trace);
-  }
-  // Every call each trace proposed, in order: unlike `evidence`, this is not
-  // limited to calls whose result got resent as later input, so it includes
-  // a call in the very last response with no later request to resend it into.
-  for (const trace of grouped.values()) {
-    trace.callVerifications = [...origins.values()].filter((origin) => origin.trace_id === trace.id).map((origin) => ({
-      call_id: origin.call_id, exchange_id: origin.exchange_id, name: origin.name, output_index: origin.output_index, proposed: origin.proposed ?? null,
-    }));
-  }
-
-  // Codex requests include a large tool schema. Return recent traces only so the
-  // live dashboard stays responsive instead of repeatedly transferring history.
-  const result = [...grouped.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, includeHistory ? 100 : 10);
-  // Every request resends the whole conversation, so each earlier item comes
-  // back once per later request: a long Claude Code session made one prompt
-  // tens of MB, fetched every few seconds. An item is sent in full once; a
-  // repeat keeps only where it sits and names the item that has the rest
-  // (content_of).
-  for (const trace of result) {
-    const first = new Map();
-    trace.evidence = trace.evidence.map((item) => {
-      const key = `${item.kind}\0${item.label}\0${item.content ?? item.preview ?? ''}`;
-      if (!first.has(key)) { first.set(key, item.id); return item; }
-      return { id: item.id, exchange_id: item.exchange_id, index: item.index, kind: item.kind, label: item.label, call_id: item.call_id ?? null, content_of: first.get(key) };
-    });
-  }
-  return result;
-}
 
 
 // Context window sizes, from OpenRouter's public model list (no key needed),
@@ -271,7 +199,24 @@ async function promptContextFor(traceId) {
   const last = trace?.requests?.at(-1);
   const entry = last ? await savedOrLive(last.id) : null;
   if (!entry) return null;
-  return { trace, context: promptContext(entry, trace.title, trace.answer ?? '') };
+  return { trace, context: promptContext(entry, trace.promptRaw ?? trace.title, trace.answer ?? '') };
+}
+// Recap (run-recap.mjs): the observer, a stronger model than the ones that
+// label single steps, reads one prompt's run and says what it did and why.
+// It is asked for by id, outside the sandboxes' model list.
+const observerModel = process.env.RAYTACE_OBSERVER_MODEL || DEFAULT_OBSERVER;
+const pendingRecaps = new Map();
+/** The recap request for one prompt as it stands now, or null (no such prompt, or no tool calls). */
+async function currentRecapRequest(traceId) {
+  const trace = (await readTraces(true, { evidence: false })).find((item) => item.id === traceId);
+  const outline = trace ? recapOutline(trace) : null;
+  return outline ? { outline, ...recapRequest(outline, observerModel) } : null;
+}
+async function askObserver(payload) {
+  const response = await fetch(`${routing.upstreams.openrouter}/v1/chat/completions`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${routing.apiKey}` }, body: JSON.stringify(payload), signal: AbortSignal.timeout(120_000) });
+  if (!response.ok) { await response.body?.cancel(); throw new Error(`The observer model returned HTTP ${response.status}.`); }
+  return response.json();
 }
 async function savedOrLive(exchangeId) {
   return liveExchanges.get(exchangeId) || db.findExchange(exchangeId);
@@ -287,9 +232,56 @@ async function currentSummaryRequest(exchangeId) {
   const ownResults = ownCalls.map((item) => ({ from: item.name, output: resultText(contexts.get(item.call_id)?.result) }));
   return summaryRequest(entry, exchangeId, summaryModel, ownResults);
 }
+// Chain of thought (step-attribution.mjs): why one tool call was made. Only
+// for prompts run in the sandbox (rtp- sessions); anything else is refused
+// before a model is called.
+const attributionModel = process.env.RAYTACE_ATTRIBUTION_MODEL ? selectModel(routing, process.env.RAYTACE_ATTRIBUTION_MODEL) : routing.defaultModel;
+const SANDBOX_SESSION = /^rtp-[a-f0-9]{32}$/;
+const pendingAttributions = new Map();
+const MAX_CONCURRENT_ATTRIBUTIONS = 4;
+
+/** The step and its cache key, or an `{ status, error }` to send back. */
+function attributionStep(exchangeId, outputIndex) {
+  const entry = db.findExchange(String(exchangeId ?? ''));
+  if (!entry) return { status: 404, error: 'Saved step not found.' };
+  if (!SANDBOX_SESSION.test(entry.session_id ?? '')) return { status: 403, error: 'Chain of thought is only available for prompts run in the sandbox.' };
+  if (!entry.payload || !entry.response) return { status: 409, error: 'This capture has no saved request or response.' };
+  const step = prepareStep(omitToolChunkIds(entry), Number(outputIndex));
+  if (!step) return { status: 400, error: 'That output is not a tool call.' };
+  const proposer = routing.mode === 'openrouter' ? attributionModel : null;
+  return { step, key: attributionKey(step, proposer, typesafe.enabled ? typesafe.model : null), proposer };
+}
+
+async function computeAttribution({ step, proposer }) {
+  let proposals = [];
+  let proposer_error = null;
+  if (proposer) {
+    try {
+      const { payload } = proposerRequest(step, proposer);
+      const routed = routeRequest(routing, { method: 'POST', url: '/v1/responses', headers: {} }, Buffer.from(JSON.stringify(payload)));
+      const response = await invokeReplay({ headers: routed.headers, upstreamUrl: routed.url }, payload, new AbortController().signal);
+      proposals = parseProposals(response, step.items);
+    } catch (error) { proposer_error = error.message; console.error('[raytace] Cause proposer unavailable:', error.message); }
+  }
+  const cands = candidates(step, proposals);
+  let result;
+  let jev_model = null;
+  if (!typesafe.enabled) result = withoutJev(cands, 'Set TYPESAFE_API_KEY to rank these.');
+  else {
+    try {
+      const { requests } = jevRequests(step, cands);
+      const responses = await Promise.all(requests.map((request) => systemOne(typesafe, request)));
+      jev_model = responses[0]?.model ?? typesafe.model;
+      result = combine(cands, responses);
+    } catch (error) { console.error('[raytace] Jev attribution unavailable:', error.message); result = withoutJev(cands, 'Jev was unavailable.'); }
+  }
+  return { ...result, action: step.call.name, proposer_model: proposer, proposer_error, jev_model };
+}
+
 const pendingExplanations = new Map();
 const pendingSummaries = new Map();
 const MAX_CONCURRENT_SUMMARIES = 4; // cheap+budget-capped calls; safe to run several at once instead of one at a time
+
 
 // ---------------------------------------------------------------- Claude Code
 // Proxy-free capture: Claude Code's hooks ring, and its session transcript is
@@ -311,14 +303,61 @@ function serially(path, job) {
   claudeCodeQueues.set(path, settled);
   return next;
 }
-function ingestClaudeCode(path, { final }) {
+/** `session` files the rows under a sandbox's rtp- id instead of the
+ * transcript's own session, and ties its processes to them afterwards. */
+function ingestClaudeCode(path, { final, session = null }) {
   serially(path, async () => {
-    const rows = exchangesFromTranscript(parseTranscript(await readFile(path, 'utf8')), { final });
+    const rows = exchangesFromTranscript(parseTranscript(await readFile(path, 'utf8')),
+      { final, sessionId: session?.id ?? null, sessionStartedAt: session?.startedAt ?? null });
     for (const row of rows) {
       await record({ ...row, request: { ...row.request, payload: redact(row.request.payload) }, response: { ...row.response, payload: redact(row.response.payload) } });
     }
+    if (session) await attributeLateProcesses(db, session.id);
   }).catch((error) => console.error(`Claude Code transcript ${path} could not be read: ${error.message}`));
 }
+
+// A sandboxed Claude Code's transcript lives in the sandbox. Its hook sends
+// the new lines through the sandbox manager, which names the sandbox; they
+// are appended to a copy here and read like any local transcript. `offset`
+// must equal the copy's size, so a lost or repeated send is never spliced in
+// twice: a mismatch answers 409 with the size to resend from.
+const SANDBOX_ID = /^rtp-[a-f0-9]{32}$/;
+const CLAUDE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const sandboxTranscripts = join(dirname(store), 'claude-code');
+// Playground forks of those sessions (playground.mjs). The hook installed in
+// a fork is read fresh each time, so a fork runs the repo's current version.
+const playground = startPlayground({ db, transcriptsDir: sandboxTranscripts,
+  hookSource: () => readFileSync(new URL('../worker/sandbox/claude-hook.mjs', import.meta.url), 'utf8') });
+async function appendSandboxTranscript(sandbox, note) {
+  if (!CLAUDE_SESSION_ID.test(note?.session_id ?? '') || !Number.isInteger(note.offset) || note.offset < 0
+    || typeof note.text !== 'string' || (note.text && !note.text.endsWith('\n'))) return { status: 400, body: { error: 'Expected session_id, offset and whole transcript lines.' } };
+  const directory = join(sandboxTranscripts, sandbox);
+  const path = join(directory, `${note.session_id}.jsonl`);
+  return serially(path, async () => {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const size = await stat(path).then((info) => info.size, () => 0);
+    if (note.offset !== size) return { status: 409, body: { size } };
+    await appendFile(path, note.text, { mode: 0o600 }); // creates it when a snapshot arrives before any line
+    return { status: 200, body: { size: size + Buffer.byteLength(note.text) }, path };
+  });
+}
+
+/** A snapshot as the sandbox hook reports it, checked field by field, or
+ * null. Paths are the agent's to name, so they are only bounded, never trusted. */
+function sandboxSnapshot(value) {
+  const sha = /^[0-9a-f]{40}$/;
+  if (!value || typeof value !== 'object' || !sha.test(value.commit ?? '') || (value.parent != null && !sha.test(value.parent))
+    || !['prompt', 'tool'].includes(value.taken_on) || (value.call_id != null && !/^[A-Za-z0-9_-]{1,128}$/.test(value.call_id))
+    || !Number.isFinite(Date.parse(value.taken_at ?? ''))) return null;
+  const path = (item) => typeof item === 'string' && item.length <= 1024;
+  const count = (item) => (Number.isInteger(item) && item >= 0 ? item : null);
+  const changes = (Array.isArray(value.changes) ? value.changes : []).slice(0, 300).filter((item) => path(item?.path))
+    .map((item) => ({ path: item.path, status: /^[ADMTUX]$/.test(item.status ?? '') ? item.status : '?', added: count(item.added), removed: count(item.removed) }));
+  return { commit: value.commit, parent: value.parent ?? null, taken_on: value.taken_on, call_id: value.call_id ?? null,
+    taken_at: value.taken_at, changed: value.changed === true, changes,
+    too_big: (Array.isArray(value.too_big) ? value.too_big : []).slice(0, 300).filter(path) };
+}
+
 
 // The prebuilt dashboard (RAYTACE_DASHBOARD_DIR), served from / so it and the
 // API share one origin. Model traffic is under /v1 and the API under /raytace,
@@ -338,6 +377,28 @@ async function serveDashboard(req, res) {
   res.end(body);
 }
 
+/** A local sandbox's Claude Code transcript lines, from its hook through the
+ * sandbox bridge (sandbox-bridge.mjs), which has named the sandbox by its
+ * token: copied here and read like a local transcript, filed under the
+ * sandbox's rtp- id so its recorded processes join them. Returns {status, body}. */
+async function ingestFromSandbox(sandbox, note) {
+  // A Playground fork sends with the project's token, so the bridge names
+  // the project; the fork's own steps are filed under the fork, and only
+  // for a fork RayTrace made of that project.
+  const fork = note?.fork == null ? null : FORK_ID.test(note.fork) ? playground.forkOf(note.fork, sandbox) : false;
+  if (fork === false || (note?.fork != null && !fork)) return { status: 403, body: { error: 'Unknown Playground fork.' } };
+  const filedUnder = fork ? fork.id : sandbox;
+  const written = await appendSandboxTranscript(filedUnder, note).catch(() => ({ status: 500, body: { error: 'Transcript copy could not be written.' } }));
+  const snapshot = written.path ? sandboxSnapshot(note.snapshot) : null;
+  if (snapshot) {
+    try { db.recordSnapshot({ sessionId: filedUnder, agentSessionId: note.session_id, snapshot }); }
+    catch (error) { console.error(`Snapshot for ${filedUnder} could not be recorded: ${error.message}`); }
+  }
+  if (written.path) ingestClaudeCode(written.path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name),
+    session: { id: filedUnder, startedAt: fork ? fork.created_at : await sandboxes.createdAt(sandbox) } });
+  return written;
+}
+
 const server = createServer(async (req, res) => {
   const fromAgent = req.headers.authorization || req.headers['x-api-key'] || req.headers['anthropic-version'];
   if (dashboardDir && req.method === 'GET' && !fromAgent && !req.url?.startsWith('/raytace/') && !req.url?.startsWith('/v1/')) {
@@ -349,9 +410,99 @@ const server = createServer(async (req, res) => {
   if (localApi && (!trustedOrigin(req.headers.origin) || !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.host || ''))) {
     res.writeHead(403); return res.end('Untrusted dashboard origin or host.');
   }
-  const corsHeaders = { ...(req.headers.origin && trustedOrigin(req.headers.origin) ? { 'access-control-allow-origin': req.headers.origin } : {}), vary: 'Origin', 'access-control-allow-methods': 'GET,POST,OPTIONS', 'access-control-allow-headers': 'content-type,x-raytace-experiment,if-none-match', 'access-control-allow-private-network': 'true' };
+  const corsHeaders = { ...(req.headers.origin && trustedOrigin(req.headers.origin) ? { 'access-control-allow-origin': req.headers.origin } : {}), vary: 'Origin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS', 'access-control-allow-headers': 'content-type,x-raytace-experiment,if-none-match', 'access-control-allow-private-network': 'true' };
   const json = (status, value) => { res.writeHead(status, { 'content-type': 'application/json', ...corsHeaders, 'cache-control': 'no-store' }); res.end(JSON.stringify(redact(omitToolChunkIds(value)))); };
   if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders); return res.end(); }
+  // This machine's local sandboxes. With the VM stopped they are still listed,
+  // from the CLI's records, as stopped. Prompt history comes from the traces.
+  if (req.method === 'GET' && req.url === '/raytace/sandboxes') {
+    const shape = (box, status) => ({ id: box.id, name: box.name, host: 'lima', on_host: true, status, created: box.created,
+      deleted: null, size_bytes: box.size_bytes ?? null, imported_bytes: null, transcripts: true, skipped_count: 0, scan: null });
+    try { return json(200, { sandboxes: (await sandboxes.list()).map((box) => shape(box, box.status === 'running' ? 'running' : 'stopped')) }); }
+    catch { return json(200, { sandboxes: (await sandboxes.known()).map((box) => shape(box, 'stopped')) }); }
+  }
+  // What the kernel layer saw a sandbox do: the fact engine's records in the VM.
+  const activityRoute = req.url?.match(/^\/raytace\/sandboxes\/(rtp-[a-f0-9]{32})\/activity(?:\?([a-z0-9=&]{1,80}))?$/);
+  if (req.method === 'GET' && activityRoute) {
+    const query = new URLSearchParams(activityRoute[2] ?? '');
+    const window = { since: Number(query.get('since')) || 0, until: Number(query.get('until')) || 0 };
+    try {
+      const box = (await sandboxes.list()).find((item) => item.id === activityRoute[1]);
+      if (!box) return json(404, { error: 'No such local sandbox.' });
+      return json(200, { id: box.id, name: box.name, ...(await sandboxes.activity(box.id, window)) });
+    } catch { return json(503, { error: NO_VM }); }
+  }
+  // The initial scan, restricted files and alerts are not kept for local sandboxes yet.
+  if (/^\/raytace\/(sandboxes\/rtp-[a-f0-9]{32}(\/files)?|alerts(\?sandbox=rtp-[a-f0-9]{32})?|alerts\/seen)$/.test(req.url ?? '')) {
+    if (req.method === 'GET' && req.url.startsWith('/raytace/alerts')) return json(200, { alerts: [] });
+    return json(404, { error: 'Not available for local sandboxes yet. Destroy one with: raytrace sandbox destroy <name>' });
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/raytace/runtime?')) {
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    const sandbox = query.get('sandbox');
+    const before = query.get('before') || '0';
+    // `since`/`until` scope the page to one agent turn (the prompt through the
+    // answer). Without them this returns the whole sandbox's history, which is
+    // every prompt ever run in it.
+    const since = query.get('since') || '0';
+    const until = query.get('until') || '0';
+    const raw = query.get('raw') === '1';
+    const ok = (value) => /^\d{1,16}$/.test(value);
+    if (!/^rtp-[a-f0-9]{32}$/.test(sandbox || '') || ![before, since, until].every(ok)) return json(400, { error: 'Invalid sandbox or cursor' });
+    try {
+      const project = (await sandboxes.list()).find((p) => p.id === sandbox);
+      if (!project?.container_id || !/^[a-f0-9]{64}$/.test(project.container_id)) return json(404, { error: 'Sandbox mapping unavailable' });
+      const window = `${since !== '0' ? `&since=${since}` : ''}${until !== '0' ? `&until=${until}` : ''}`;
+      // A windowed page wants everything in the window, not the newest 100:
+      // folding turns hundreds of raw events into a handful of commands.
+      const limit = since !== '0' || until !== '0' ? 500 : 100;
+      const evidence = await fetch(`${EVIDENCE_VIEWER}/events?container=${project.container_id}&before=${before}${window}&limit=${limit}&processes=1`, { signal: AbortSignal.timeout(10000) });
+      if (!evidence.ok) throw new Error('Runtime collector unavailable');
+      const page = await evidence.json();
+      const base = { ...page, sandbox, container_id: project.container_id };
+      // `raw=1` is the "show everything" escape hatch: the folded view must
+      // always be auditable against what the collector actually recorded.
+      if (raw) return json(200, base);
+
+      const { commands, folded } = foldEvents(page.events);
+      // Which call each process belongs to, by the process's own identity
+      // (pid + start time) within this sandbox. `attribution` stays null when
+      // the process was not recorded yet -- not the same as unattributed,
+      // which is a recorded process that matched no call.
+      const known = new Map(db.attributionsForProcesses({ containerId: project.container_id, pids: commands.map((c) => c.pid) })
+        .map((row) => [`${row.pid}:${row.start_time_ns}`, row]));
+      for (const command of commands) {
+        const row = command.process_start_ns ? known.get(`${command.pid}:${command.process_start_ns}`) : null;
+        command.attribution = row ? { call_id: row.call_id ?? null, parent_call_id: row.parent_call_id ?? null, tier: row.tier ?? null } : null;
+      }
+      attributeMarked(commands);
+      // Cache first, so a repeat view of the same turn costs nothing. Only
+      // commands no rule can describe are ever sent to a model.
+      describeAll(commands, (command) => db.getCommandDescription(command));
+      const missing = undescribed(commands);
+      if (missing.length && routing.mode === 'openrouter') {
+        try {
+          const request = describeRequest(missing, summaryModel);
+          const routed = routeRequest(routing, { method: 'POST', url: '/v1/responses', headers: {} }, Buffer.from(JSON.stringify(request.payload)));
+          const response = await invokeReplay({ headers: routed.headers, upstreamUrl: routed.url }, request.payload, new AbortController().signal);
+          const text = (response.output || []).filter((item) => item.type === 'message')
+            .map((item) => (item.content || []).map((part) => part.text || '').join('')).join(' ');
+          for (const [command, description] of parseDescriptions(text, request.commands)) {
+            db.putCommandDescription(command, description, summaryModel);
+          }
+          describeAll(commands, (command) => db.getCommandDescription(command));
+        } catch (error) {
+          // A failed description must never cost us the evidence: the commands
+          // still render, just verbatim.
+          console.error('[raytace] command descriptions unavailable:', error.message);
+        }
+      }
+      let call_labels = {};
+      try { call_labels = await assessCommands(commands); }
+      catch (error) { console.error('[raytace] command severity unavailable:', error.message); }
+      return json(200, { ...base, commands, folded, call_labels, severity_source: typesafe.enabled ? 'jev' : 'rules', events: undefined });
+    } catch { return json(503, { error: 'Runtime evidence unavailable: the local sandbox VM is not running. Missing evidence is not proof of non-execution.' }); }
+  }
   // The dashboard polls the history every few seconds: its context items
   // (`evidence`) grow with the square of a session's length, so the history
   // carries them only when asked for (&evidence=1, Compare runs). The recent
@@ -365,6 +516,19 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', ...headers }); return res.end(body);
     }
     catch (error) { res.writeHead(500, { 'content-type': 'application/json', ...corsHeaders }); return res.end(JSON.stringify({ error: String(error) })); }
+  }
+  // Splunk-style search over the derived index (search.mjs). `from`/`to`
+  // are epoch ms or ISO dates; the query itself carries fields and pipes.
+  if (req.method === 'GET' && (req.url === '/raytace/search' || req.url?.startsWith('/raytace/search?') || req.url?.startsWith('/raytace/search/signatures'))) {
+    try {
+      const params = new URL(req.url, 'http://localhost').searchParams;
+      const bound = (name) => { const raw = params.get(name); if (!raw) return null; const ms = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw); return Number.isFinite(ms) ? ms : null; };
+      const range = { fromMs: bound('from'), toMs: bound('to') };
+      if (req.url.startsWith('/raytace/search/signatures')) {
+        return json(200, { signatures: db.failureSignatures({ ...range, limit: Number(params.get('limit')) || 20 }) });
+      }
+      return json(200, db.search({ q: params.get('q') ?? '', ...range, limit: Number(params.get('limit')) || 50, offset: Number(params.get('offset')) || 0 }));
+    } catch (error) { return json(500, { error: `Search failed: ${error.message}` }); }
   }
   // Who is signed in and which paid features they have. Nobody yet: sign-in
   // comes with the RayTrace cloud; the dashboard already reads this shape.
@@ -407,6 +571,11 @@ const server = createServer(async (req, res) => {
     res.writeHead(text == null ? 404 : 200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     return res.end(text ?? 'Not found in the captured context.');
   }
+  const recapRoute = req.url?.match(/^\/raytace\/recap\/([A-Za-z0-9_-]{1,80})$/);
+  if (req.method === 'GET' && recapRoute) {
+    const request = await currentRecapRequest(recapRoute[1]);
+    return json(200, { recap: request ? db.getSummary(request.key) : null, available: Boolean(request), model: observerModel });
+  }
   const summaryRoute = req.url?.match(/^\/raytace\/summaries\/([a-f0-9-]+)$/);
   // Only a summary of the step as it stands now: one written by an older
   // version, or before the step's own result was known, is not served.
@@ -414,7 +583,40 @@ const server = createServer(async (req, res) => {
     const request = await currentSummaryRequest(summaryRoute[1]);
     return json(200, { summary: request ? db.getSummary(request.key) : null, model: summaryModel });
   }
+  const attributionRoute = req.url?.match(/^\/raytace\/attribution\/([A-Za-z0-9_.:-]{1,120})\/(\d{1,5})$/);
+  if (req.method === 'GET' && attributionRoute) {
+    const found = attributionStep(decodeURIComponent(attributionRoute[1]), attributionRoute[2]);
+    if (found.error) return json(found.status, { error: found.error });
+    return json(200, { attribution: db.getExplanation(found.key) });
+  }
   if (req.method === 'GET' && req.url === '/raytace/experiments') return json(200, { experiments: [...jobs.values()].slice(-30).reverse() });
+  // Playground forks (playground.mjs): listed and read freely, changed only
+  // with the dashboard's header, like experiments.
+  if (req.method === 'GET' && req.url === '/raytace/forks') return json(200, { forks: playground.list() });
+  const previewRoute = req.url?.match(/^\/raytace\/forks\/preview\/([a-f0-9-]{36})$/);
+  if (req.method === 'GET' && previewRoute) {
+    try { return json(200, await playground.preview(previewRoute[1])); } catch (error) { return json(400, { error: error.message }); }
+  }
+  // A project's snapshot history, read-only: its files at a snapshot, one
+  // file, or the diff between two snapshots (a fork's live under refs/forks/).
+  const snapRoute = req.url?.match(/^\/raytace\/snapshots\/(rtp-[a-f0-9]{32})\/(files|file|diff)\?(.*)$/);
+  if (req.method === 'GET' && snapRoute) {
+    const query = new URLSearchParams(snapRoute[3]);
+    const request = { op: { files: 'list', file: 'show', diff: 'diff' }[snapRoute[2]], commit: query.get('commit') ?? '',
+      ...(query.get('to') ? { to: query.get('to') } : {}), ...(query.get('path') ? { path: query.get('path') } : {}) };
+    try { return json(200, await playground.snapshot(snapRoute[1], request)); } catch (error) { return json(400, { error: error.message }); }
+  }
+  const forkRoute = req.url?.match(/^\/raytace\/forks\/(rtf-[a-f0-9]{32})(?:\/(keep|unkeep|delete|stop-all))?$/);
+  if (forkRoute) {
+    if (req.method === 'GET' && !forkRoute[2]) { const fork = playground.get(forkRoute[1]); return fork ? json(200, fork) : json(404, { error: 'Fork not found.' }); }
+    if (req.method !== 'POST' || !forkRoute[2] || req.headers['x-raytace-experiment'] !== '1') return json(403, { error: 'Use the Playground in the dashboard.' });
+    try {
+      const action = forkRoute[2];
+      return json(200, action === 'delete' ? await playground.remove(forkRoute[1]) : action === 'stop-all' ? await playground.stopGroup(forkRoute[1])
+        : playground.keep(forkRoute[1], action === 'keep'));
+    }
+    catch (error) { return json(400, { error: error.message }); }
+  }
   const jobRoute = req.url?.match(/^\/raytace\/experiments\/([a-f0-9-]+)(\/cancel)?$/);
   if (jobRoute) {
     const job = jobs.get(jobRoute[1]); if (!job) return json(404, { error: 'Experiment not found.' });
@@ -425,7 +627,8 @@ const server = createServer(async (req, res) => {
   // Claude Code hook doorbell (proxy/claude-code-hook.mjs): "this session's
   // transcript has new lines". Answered at once; the transcript is read
   // afterwards so the hook never holds Claude Code up. The custom header is
-  // not in the CORS allow-list, so a web page cannot ring it.
+  // not in the CORS allow-list, so a web page cannot ring it. A local
+  // sandbox's hook sends its lines to the sandbox bridge instead (ingestFromSandbox).
   if (req.method === 'POST' && req.url === '/raytace/ingest/claude-code') {
     if (req.headers['x-raytace-hook'] !== '1' || !req.headers['content-type']?.includes('application/json')) return json(403, { error: 'Claude Code hook requests only.' });
     const chunks = []; let size = 0;
@@ -438,11 +641,15 @@ const server = createServer(async (req, res) => {
     ingestClaudeCode(path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name) });
     return;
   }
-  if (localApi && (req.method !== 'POST' || !['/raytace/experiments', '/raytace/step-runs', '/raytace/explanations', '/raytace/summaries', '/raytace/prompt-context/summary'].includes(req.url))) return json(404, { error: 'Unknown local endpoint.' });
+  if (localApi && (req.method !== 'POST' || !['/raytace/experiments', '/raytace/step-runs','/raytace/explanations', '/raytace/attribution', '/raytace/summaries', '/raytace/prompt-context/summary', '/raytace/forks', '/raytace/recap'].includes(req.url))) return json(404, { error: 'Unknown local endpoint.' });
   if (localApi && (req.headers['x-raytace-experiment'] !== '1' || !req.headers['content-type']?.includes('application/json'))) return json(403, { error: 'Use the experiment control in the dashboard.' });
   const parts = []; let bytes = 0;
   for await (const part of req) { bytes += part.length; if (bytes > (localApi ? 600_000 : 20_000_000)) return json(413, { error: 'Request too large.' }); parts.push(part); }
   const requestBody = Buffer.concat(parts);
+  if (req.method === 'POST' && req.url === '/raytace/forks') {
+    try { return json(202, await playground.create(JSON.parse(requestBody))); }
+    catch (error) { return json(400, { error: error.message }); }
+  }
   if (req.method === 'POST' && req.url === '/raytace/explanations') {
     try {
       if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate explanations.' });
@@ -465,6 +672,46 @@ const server = createServer(async (req, res) => {
         pendingExplanations.set(request.key, task);
       }
       try { return json(200, await pendingExplanations.get(request.key)); } finally { pendingExplanations.delete(request.key); }
+    } catch (error) { return json(400, { error: error.message }); }
+  }
+  if (req.method === 'POST' && req.url === '/raytace/attribution') {
+    try {
+      const config = JSON.parse(requestBody);
+      const found = attributionStep(config.exchange_id, config.output_index);
+      if (found.error) return json(found.status, { error: found.error });
+      const cached = db.getExplanation(found.key);
+      if (cached) return json(200, cached);
+      if (!pendingAttributions.has(found.key)) {
+        if (pendingAttributions.size >= MAX_CONCURRENT_ATTRIBUTIONS) return json(409, { error: 'Too many steps in flight. Try again shortly.' });
+        const task = (async () => {
+          const result = await computeAttribution(found);
+          // A result missing a model only because it failed is not cached, so
+          // the next open retries it.
+          if (!result.proposer_error && (result.ranked || !typesafe.enabled)) db.putExplanation(found.key, result);
+          return result;
+        })().finally(() => pendingAttributions.delete(found.key));
+        pendingAttributions.set(found.key, task);
+      }
+      return json(200, await pendingAttributions.get(found.key));
+    } catch (error) { console.error('Attribution failed:', error); return json(400, { error: error.message }); }
+  }
+  if (req.method === 'POST' && req.url === '/raytace/recap') {
+    try {
+      if (routing.mode !== 'openrouter') return json(400, { error: 'Enable OpenRouter to generate recaps.' });
+      const request = await currentRecapRequest(String(JSON.parse(requestBody).trace_id ?? ''));
+      if (!request) return json(404, { error: 'Nothing to recap: the prompt was not found, or it made no tool calls.' });
+      const cached = db.getSummary(request.key);
+      if (cached) return json(200, cached);
+      if (!pendingRecaps.has(request.key)) {
+        pendingRecaps.set(request.key, (async () => {
+          const recap = parseRecap(recapText(await askObserver(request.payload)), request.outline);
+          if (!recap) throw new Error('The observer did not return a usable recap. Try again.');
+          const result = { ...recap, model: observerModel, created_at: new Date().toISOString() };
+          db.putSummary(request.key, null, result);
+          return result;
+        })().finally(() => pendingRecaps.delete(request.key)));
+      }
+      return json(200, await pendingRecaps.get(request.key));
     } catch (error) { return json(400, { error: error.message }); }
   }
   if (req.method === 'POST' && req.url === '/raytace/prompt-context/summary') {
@@ -560,7 +807,7 @@ const server = createServer(async (req, res) => {
   const spanId = randomUUID();
   const sessionId = req.headers['x-raytace-session-id'];
   const sessionStartedAt = req.headers['x-raytace-session-started-at'];
-  const session = typeof sessionId === 'string' && /^[a-f0-9-]{36}$/.test(sessionId) && typeof sessionStartedAt === 'string' && Number.isFinite(Date.parse(sessionStartedAt))
+  const session = typeof sessionId === 'string' && /^(?:[a-f0-9-]{36}|rtp-[a-f0-9]{32})$/.test(sessionId) && typeof sessionStartedAt === 'string' && Number.isFinite(Date.parse(sessionStartedAt))
     ? { session_id: sessionId, session_started_at: new Date(sessionStartedAt).toISOString() } : fallbackSession;
   const requestPayload = routed.payload;
   try {
@@ -595,6 +842,7 @@ server.on('error', (error) => {
 });
 try {
   for (const job of db.loadExperiments(200).reverse()) {
+    if (job.kind === 'fork') continue; // Playground forks: playground.mjs
     if (['queued', 'running'].includes(job.status)) job.status = 'interrupted';
     jobs.set(job.id, job);
   }
@@ -603,6 +851,36 @@ try {
 server.listen(port, '127.0.0.1', () => {
   const stats = db.stats();
   console.log(`RayTrace proxy listening on http://127.0.0.1:${server.address().port}`);
-  console.log(`Store: ${dbFile} (journal=${db.journal}, ${stats.sessions} sessions, ${stats.turns} turns, ${stats.exchanges} exchanges)`);
+  playground.recover().catch((error) => console.error(`Playground forks could not be checked: ${error.message}`));
+  console.log(`Store: ${dbFile} (journal=${db.journal}, ${stats.sessions} sessions, ${stats.turns} turns, ${stats.exchanges} exchanges, ${stats.processes} sandbox processes)`);
 });
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { try { db.close(); } finally { process.exit(0); } });
+// gVisor sandbox evidence (worker/sandbox/): discovers the local sandboxes from the
+// Mac-side manager (:8799) and tails each one's process events from the
+// evidence viewer (:8798), recording matched execs as the primary witness
+// for those sessions. Best-effort: with neither service running it logs
+// once and idles. RAYTACE_GVISOR_FORWARDER=0 turns it off entirely.
+const gvisorForwarder = process.env.RAYTACE_GVISOR_FORWARDER === '0' ? null : startGvisorForwarder({
+  listProjects: () => sandboxes.list(),
+  viewerBase: EVIDENCE_VIEWER,
+  ingest: (events, { sessionId }) => ingestExecutions(db, events, { sessionId }),
+  // Exits, found by the process's own identity (pid + start time), so an
+  // exit closes its process even after a proxy restart or for a process the
+  // forwarder never tracked.
+  finish: (row) => recordExit(row),
+  finishByProcess: (row) => recordExit(row),
+  // A sandbox whose remaining exits can no longer arrive.
+  lose: (row) => db.loseOpenProcesses({ containerId: row.container_id, reason: row.reason, raw: row.raw ?? null, ended: row.ended === true }),
+  // Processes that ran underneath a matched call, and ones that matched
+  // nothing at all (parent_call_id null): recorded either way.
+  descend: ({ exec, parent_call_id, session_id }) => {
+    const started = db.recordProcessStart({ containerId: exec.container_id, projectId: session_id ?? null, raw: exec.raw, startedMs: exec.timestamp });
+    if (parent_call_id && started?.eventId) db.attribute({ toolCallId: parent_call_id, eventId: started.eventId, method: 'inherited', confidence: 'corroborated' });
+  },
+});
+function recordExit(row) {
+  return db.recordProcessExit({ containerId: row.container_id, projectId: row.session_id ?? null, raw: row.raw,
+    endedMs: row.ended_ms ?? null, exit_code: row.exit_code ?? null, signal: row.signal ?? null });
+}
+// Local sandboxes' Claude Code transcripts (raytrace sandbox create --local).
+startSandboxBridge({ dataDir, port: Number(process.env.RAYTRACE_BRIDGE_PORT || 8799), ingest: ingestFromSandbox });
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { try { gvisorForwarder?.stop(); db.close(); } finally { process.exit(0); } });

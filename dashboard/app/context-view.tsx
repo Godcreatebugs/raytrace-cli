@@ -5,16 +5,18 @@
 //   B  what the model brought: its earlier answers and the files whose
 //      contents reached it, with how much of each got in
 //   C  internals the harness injects on every request
-// A file's "Test impact" reruns the next step without that output.
+// A file's "Rerun without this" opens the Playground with that output
+// removed. Runs the Playground cannot fork (anything but a sandboxed Claude
+// Code session) keep the older single-step rerun underneath, as "Test it".
 import { useEffect, useRef, useState } from 'react';
-import { Check, ExternalLink, FlaskConical } from 'lucide-react';
+import { Check, ExternalLink, FlaskConical, GitFork } from 'lucide-react';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { type Trace } from './types';
 import { DecisionLab, type SelectedStep } from './decision-lab';
+import { runPlace } from './trace-utils';
+import { api } from './api';
 
-const API = '/raytace';
-
-type FileEntry = { path: string; op: 'read' | 'wrote' | 'listed'; when: 'before' | 'this prompt'; reads: number; lines: number; chars: number; share: number;
+type FileEntry = { path: string; op: 'read' | 'wrote' | 'listed'; via?: 'tool' | 'command'; when: 'before' | 'this prompt'; reads: number; lines: number; chars: number; share: number;
   shared_output: boolean; used_later: string[]; command: string; call_id: string; context_index: number; excerpt: string };
 type Internal = { kind: string; context_index: number | 'instructions' | 'tools'; chars: number; share: number; excerpt?: string; fields?: Record<string, string>; names?: string[] };
 type Summary = { prompts: string[]; answers: string; model?: string };
@@ -31,7 +33,17 @@ type PromptContext = {
 // Sizes arrive as characters; ~4 characters per token is the usual estimate.
 const est = (chars: number) => Math.round(chars / 4);
 const k = (tokens: number) => (tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens));
-const itemUrl = (traceId: string, index: number | string) => `${API}/prompt-context/${traceId}/item/${index}`;
+/** One context item's full text, in its own tab. Fetched, not linked: the
+ * hosted API wants the signed-in token. The tab is opened first, while the
+ * click still allows it. */
+async function openItem(traceId: string, index: number | string) {
+  const tab = window.open('', '_blank');
+  try {
+    const response = await api().fetch(`/raytace/prompt-context/${traceId}/item/${index}`);
+    const url = URL.createObjectURL(new Blob([await response.text()], { type: 'text/plain;charset=utf-8' }));
+    if (tab) tab.location.replace(url); else window.location.assign(url);
+  } catch { tab?.close(); }
+}
 const oneLine = (text: string, max = 140) => { const line = text.replace(/\s+/g, ' ').trim(); return line.length > max ? `${line.slice(0, max - 1)}…` : line; };
 
 function useContext(traceId: string) {
@@ -41,9 +53,9 @@ function useContext(traceId: string) {
   const asked = useRef(false);
   useEffect(() => {
     let closed = false;
-    fetch(`${API}/prompt-context/${traceId}`).then(async (response) => {
+    api().fetch(`/raytace/prompt-context/${traceId}`).then(async (response) => {
       const value = await response.json() as PromptContext;
-      if (response.status === 404 && value.error === 'Unknown local endpoint.') throw new Error('The proxy is running an older version without this page. Restart it (raytrace stop, then raytrace start) and reload.');
+      if (response.status === 404 && value.error === 'Unknown local endpoint.') throw new Error('The proxy is running an older version without this page. Restart it (npm run proxy) and reload.');
       if (!response.ok) throw new Error(value.error || 'Context unavailable');
       if (!closed) setData(value);
     }).catch((e) => { if (!closed) setError(e instanceof Error ? e.message : 'Context unavailable'); });
@@ -56,7 +68,7 @@ function useContext(traceId: string) {
     asked.current = true;
     let closed = false;
     setSummarizing(true);
-    fetch(`${API}/prompt-context/summary`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-raytace-experiment': '1' }, body: JSON.stringify({ trace_id: traceId }) })
+    api().fetch('/raytace/prompt-context/summary', { method: 'POST', headers: { 'content-type': 'application/json', 'x-raytace-experiment': '1' }, body: JSON.stringify({ trace_id: traceId }) })
       .then(async (response) => { const value = await response.json() as Summary & { error?: string }; if (response.ok && !closed) setData((prev) => prev && { ...prev, summary: value }); })
       .catch(() => { /* boxes still render without the summary line */ })
       .finally(() => { if (!closed) setSummarizing(false); });
@@ -65,7 +77,7 @@ function useContext(traceId: string) {
   return { data, error, summarizing };
 }
 
-function FileRow({ file, traceId, onTest }: { file: FileEntry; traceId: string; onTest?: () => void }) {
+function FileRow({ file, traceId, onTest, onRerun }: { file: FileEntry; traceId: string; onTest?: () => void; onRerun?: () => void }) {
   const [open, setOpen] = useState(false);
   const size = file.op === 'wrote' ? '—' : `${file.lines} line${file.lines === 1 ? '' : 's'}`;
   return <>
@@ -81,9 +93,11 @@ function FileRow({ file, traceId, onTest }: { file: FileEntry; traceId: string; 
       </button>
     </li>
     {open && <li className="rt-file-detail">
-      <p className="rt-muted">{file.when === 'before' ? 'In context before your question' : 'Read while answering this prompt'}{file.reads > 1 ? ` · read ${file.reads} times` : ''} · via <code>{oneLine(file.command, 90)}</code></p>
+      <p className="rt-muted">{file.when === 'before' ? 'In context before your question' : 'Read while answering this prompt'}{file.reads > 1 ? ` · read ${file.reads} times` : ''} · {file.via === 'tool' ? 'named by the tool call' : 'inferred from the command'} <code>{oneLine(file.command, 90)}</code></p>
       <div className="rt-actions">
-        {file.op !== 'wrote' && <a className="rt-button" href={itemUrl(traceId, file.context_index)} target="_blank" rel="noreferrer">Open what the model saw <ExternalLink size={13} /></a>}
+        {file.op !== 'wrote' && <button type="button" className="rt-button" onClick={() => void openItem(traceId, file.context_index)}>Open what the model saw <ExternalLink size={13} /></button>}
+        {onRerun && file.op !== 'wrote' && <button type="button" className="rt-button" onClick={onRerun}
+          title="Open the Playground at the next step, with this output removed"><GitFork size={14} /> Rerun without this</button>}
         {onTest && file.op !== 'wrote' && <button type="button" className="rt-button" onClick={onTest}><FlaskConical size={14} /> Test impact</button>}
       </div>
     </li>}
@@ -115,11 +129,13 @@ function ContextWindow({ data }: { data: PromptContext }) {
   </section>;
 }
 
-export function ContextView({ trace, stepKey, onStep }: {
+export function ContextView({ trace, stepKey, onStep, onRerunWithout }: {
   trace: Trace;
   /** `exchange_id:output_index` of the step "Test it" is on. */
   stepKey: string | null;
   onStep: (key: string) => void;
+  /** Opens the Playground at a model call with one earlier call's output removed; unset where there is no Playground. */
+  onRerunWithout?: (exchangeId: string, callId: string) => void;
 }) {
   const { data, error, summarizing } = useContext(trace.id);
   // Closed until asked for: the boxes are the point of this page.
@@ -141,6 +157,16 @@ export function ContextView({ trace, stepKey, onStep }: {
     requestAnimationFrame(() => testRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   }
   const canTest = (file: FileEntry) => { const at = steps.findIndex((item) => item.call_id === file.call_id); return at >= 0 && at < steps.length - 1; };
+  // A sandboxed Claude Code session is rerun for real in the Playground,
+  // from the model call after the one that read the file.
+  const forkable = runPlace(trace).forkable;
+  const reruns = api().reruns;
+  const requestIds = (trace.requests ?? []).map((request) => request.id);
+  const rerunFor = (file: FileEntry) => {
+    const call = calls.find((item) => item.call_id === file.call_id);
+    const next = call ? requestIds[requestIds.indexOf(call.exchange_id) + 1] : undefined;
+    return onRerunWithout && forkable && next ? () => onRerunWithout(next, file.call_id) : undefined;
+  };
 
   const reads = data?.files.filter((file) => file.op !== 'listed') ?? [];
   const listed = data?.files.filter((file) => file.op === 'listed') ?? [];
@@ -171,13 +197,13 @@ export function ContextView({ trace, stepKey, onStep }: {
         <p className="rt-box-note">{earlierAnswers.length
           ? data.summary?.answers || `${earlierAnswers.length} earlier answer${earlierAnswers.length === 1 ? '' : 's'}: ${oneLine(earlierAnswers.at(-1)!.text, 120)}`
           : 'No earlier answers: it started this conversation with your question.'}</p>
-        {reads.length ? <ul className="rt-files" title="Inferred from the commands the model ran, not observed at the file level.">
-          {reads.map((file) => <FileRow key={`${file.op}:${file.path}`} file={file} traceId={trace.id}
-            onTest={canTest(file) ? () => testImpact(file) : undefined} />)}
-        </ul> : <p className="rt-muted">No file contents reached the model.</p>}
+        {reads.length ? <ul className="rt-files" title="From the agent's file tools and the commands it ran, not observed at the file level.">
+          {reads.map((file) => <FileRow key={`${file.op}:${file.path}`} file={file} traceId={trace.id} onRerun={rerunFor(file)}
+            onTest={reruns && !forkable && canTest(file) ? () => testImpact(file) : undefined} />)}
+        </ul> : <p className="rt-muted">No file reads identified in what was captured.</p>}
         {listed.length > 0 && <details className="rt-listed"><summary>listed {listed.length} location{listed.length === 1 ? '' : 's'}</summary>
           <ul className="rt-files">{listed.map((file) => <FileRow key={`${file.op}:${file.path}`} file={file} traceId={trace.id} />)}</ul></details>}
-        <p className="rt-box-foot">Tokens are estimates of what each file added to the context window. “used” means words from the file reappear in what the model wrote later. Test impact reruns the next step without it.</p>
+        <p className="rt-box-foot">Tokens are estimates of what each file added to the context window. “used” means words from the file reappear in what the model wrote later. {forkable ? (onRerunWithout ? 'Rerun without this opens the Playground with that output removed.' : '') : reruns ? 'Test impact reruns the next step without it.' : ''}</p>
       </section>
 
       <section className="rt-box">
@@ -186,14 +212,14 @@ export function ContextView({ trace, stepKey, onStep }: {
           <details><summary><strong>{item.kind}</strong><span>~{k(est(item.chars))} tokens</span></summary>
             {item.kind === 'Environment' && env ? <dl>{Object.entries(env).map(([name, value]) => <div key={name}><dt>{name.replace(/_/g, ' ')}</dt><dd>{value}</dd></div>)}</dl>
               : item.names ? <p className="rt-muted">{item.names.join(', ')}</p> : null}
-            <a className="link-button" href={itemUrl(trace.id, item.context_index)} target="_blank" rel="noreferrer">Open full text ↗</a>
+            <button type="button" className="link-button" onClick={() => void openItem(trace.id, item.context_index)}>Open full text ↗</button>
           </details>
         </li>)}</ul>
         {!data.internals.some((item) => item.kind === 'AGENTS.md') && <p className="rt-muted">No AGENTS.md was loaded.</p>}
       </section>
     </div>}
 
-    <details className="rt-test" ref={testRef} open={testing} onToggle={(event) => setTesting(event.currentTarget.open)}>
+    {reruns && !forkable && <details className="rt-test" ref={testRef} open={testing} onToggle={(event) => setTesting(event.currentTarget.open)}>
       <summary><FlaskConical size={14} /> Test it: rerun a step with part of its context changed</summary>
       {steps.length ? <>
         <label htmlFor="lab-step" className="workspace-label">STEP</label>
@@ -202,6 +228,6 @@ export function ContextView({ trace, stepKey, onStep }: {
         </NativeSelect>
         {testing && step && <div className="rt-lab-body"><DecisionLab key={`${key(step)}:${focusCall ?? ''}`} selected={step} focusCallId={focusCall} /></div>}
       </> : <p className="rt-empty">This prompt proposed no tool calls, so there is no step to rerun.</p>}
-    </details>
+    </details>}
   </section>;
 }

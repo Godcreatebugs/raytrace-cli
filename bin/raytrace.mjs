@@ -22,6 +22,20 @@ Cloud sandboxes:
   raytrace sandbox start|stop [id]
   raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
 
+Local sandboxes (your project stays on this machine):
+  raytrace sandbox create --local [--name <name>] [--yes]
+                                            a copy of this Git repository in a gVisor sandbox
+                                            in a Linux VM here; the name defaults to the folder's.
+                                            Offers to download Lima if missing (--yes: no prompt)
+  raytrace connect <name>                   a terminal in it; run claude there
+  raytrace sandbox list --local
+  raytrace sandbox start|stop <name>
+  raytrace sandbox destroy <name> [--delete-logs | --keep-logs]
+                                            asks whether to delete its captured logs too;
+                                            kept logs move to ~/.raytrace/archive
+  Recorded commands, files and connections: http://localhost:8798.
+  macOS and Linux; Windows is experimental. raytrace doctor shows what is missing.
+
 Your sign-in stays on this machine; raytrace auth logout removes it.`;
 
 // node:sqlite, which the recorder stores everything in, needs 22.13.
@@ -62,9 +76,11 @@ if (command === 'auth') {
 
 // `raytrace connect <id>`: the sandbox's terminal, by the id the dashboard shows.
 if (command === 'connect') {
-  if (rest.length > 1 || rest[0]?.startsWith('-')) { console.error('Usage: raytrace connect [sandbox-id]'); process.exit(2); }
+  const flags = { local: rest.includes('--local') };
+  const args = rest.filter((arg) => arg !== '--local');
+  if (args.length > 1 || args[0]?.startsWith('-')) { console.error('Usage: raytrace connect [sandbox-id or local name] [--local]'); process.exit(2); }
   const sandbox = await import('../src/sandbox.mjs');
-  try { await sandbox.shell(rest[0]); process.exit(0); }
+  try { await sandbox.shell(args[0], flags); process.exit(0); }
   catch (error) { console.error(`raytrace connect: ${error.message}`); process.exit(1); }
 }
 
@@ -75,15 +91,18 @@ if (command === 'sandbox') {
     parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
       yes: { type: 'boolean', short: 'y' },
       name: { type: 'string' },
+      local: { type: 'boolean' },
+      'delete-logs': { type: 'boolean' },
+      'keep-logs': { type: 'boolean' },
     } });
   } catch (error) { console.error(`${error.message}\n\nRun \`raytrace help\` for usage.`); process.exit(2); }
   const [sub, id] = parsed.positionals;
   const action = {
     create: () => sandbox.create(parsed.values),
-    list: () => sandbox.list(),
-    shell: () => sandbox.shell(id),
-    start: () => sandbox.start(id),
-    stop: () => sandbox.stop(id),
+    list: () => sandbox.list(parsed.values),
+    shell: () => sandbox.shell(id, parsed.values),
+    start: () => sandbox.start(id, parsed.values),
+    stop: () => sandbox.stop(id, parsed.values),
     destroy: () => sandbox.destroy(id, parsed.values),
   }[sub];
   if (!action) { console.error(`Unknown sandbox command: ${sub ?? '(none)'}\n\n${HELP}`); process.exit(2); }

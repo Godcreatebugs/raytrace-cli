@@ -133,6 +133,17 @@ export async function doctor() {
   else line(null, 'proxy', `stopped (port ${port} free)`);
   line(existsSync(paths.database) ? true : null, 'database', existsSync(paths.database) ? `${paths.database} (${(statSync(paths.database).size / 1e6).toFixed(1)} MB)` : 'not created yet; it is made on first start');
 
+  // Local sandboxes are optional: what they lack is shown, not counted as a problem.
+  say('\nLocal sandboxes (raytrace sandbox create --local):');
+  const { checks } = await import('./lima.mjs');
+  const { vmStatus } = await import('./local-sandbox.mjs');
+  let vm = null;
+  try { vm = vmStatus(); } catch { /* no Lima yet */ }
+  const rows = await checks({ vmRunning: vm === 'Running' });
+  for (const { ok, label, detail, fix } of rows) say(`${ok === false ? '✗' : ok === null ? '·' : '✓'} ${label.padEnd(22)} ${detail}${fix ? `\n  ${''.padEnd(22)} fix: ${fix}` : ''}`);
+  if (vm) say(`· ${'vm'.padEnd(22)} raytrace: ${vm.toLowerCase()}`);
+  else if (rows.every((row) => row.ok !== false)) say(`· ${'vm'.padEnd(22)} not created yet; the first local sandbox makes it`);
+
   say(problems ? `\n${problems} problem${problems === 1 ? '' : 's'} found.` : '\nNo problems found.');
   if (problems) process.exitCode = 1;
 }
@@ -165,7 +176,14 @@ export async function uninstall(flags) {
   if (hookState().installed) say(`Removed the Claude Code hook from ${setHook({ remove: true })}.`);
   if (existsSync(paths.home)) {
     const purge = flags.purge || (!yes && await confirm(`Delete ${paths.home} (recorded sessions and settings)?`, false));
-    if (purge) { rmSync(paths.home, { recursive: true, force: true }); say(`Deleted ${paths.home}.`); }
+    if (purge) {
+      // Before the folder goes: the Lima that RayTrace downloaded, which removes the VM, is in it.
+      const { deleteVm } = await import('./local-sandbox.mjs');
+      try { if (deleteVm()) say('Deleted the local sandbox VM (raytrace) and its sandboxes.'); }
+      catch (error) { say(`The local sandbox VM was not deleted (${error.message.split('\n')[0]}); limactl delete --force raytrace removes it.`); }
+      rmSync(paths.home, { recursive: true, force: true });
+      say(`Deleted ${paths.home}.`);
+    }
     else say(`Kept ${paths.home}.`);
   }
   say('To remove the command itself: npm uninstall -g @raytrace/cli');

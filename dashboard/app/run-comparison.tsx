@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { api } from './api';
 import { Sheet, SheetTrigger, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { actions, alignActions, metrics, answer, contextText, type ComparisonTrace } from './run-comparison-data';
@@ -33,7 +34,7 @@ export function RunComparison({traces: liveTraces,currentId}:{traces:ComparisonT
   useEffect(()=>{
     if(!open) return;
     const controller=new AbortController(); setLoading(true);setError('');
-    fetch('/raytace/traces?scope=history&evidence=1',{signal:controller.signal}).then(async response=>{
+    api().fetch('/raytace/traces?scope=history&evidence=1',{signal:controller.signal}).then(async response=>{
       if(!response.ok) throw new Error('Could not load saved runs. Check that the proxy is running with the latest version.');
       const data=await response.json() as {traces:ComparisonTrace[]}; if(!Array.isArray(data.traces)) throw new Error('Invalid saved-run response.');
       setHistory(data.traces);

@@ -16,6 +16,12 @@ function isBackgroundPrompt(text) {
     (text.startsWith('Write a brief catch-up for a user returning to this Codex task.') && text.includes('Recent conversation:'));
 }
 
+/** A prompt as its author wrote it: without the tags Claude Code wraps
+ * pasted text in, which would otherwise be the first line every view shows. */
+export function promptAsWritten(text) {
+  return typeof text === 'string' ? text.replace(/<\/?pasted_content\b[^>\n]*>[ \t]*\n?/g, '').trim() || text : text;
+}
+
 export function promptInfo(payload) {
   const input = payload?.input ?? payload?.messages;
   if (typeof input === 'string') return !input.trim() || isBackgroundPrompt(input.trim()) ? null : { title: input.trim(), prefix: input, continuation: false };

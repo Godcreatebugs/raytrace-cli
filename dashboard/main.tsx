@@ -1,8 +1,24 @@
 // The dashboard as a static page, served by the RayTrace proxy from the same
-// origin as its API.
+// origin as its API. The views are raytace's own (app/), the same ones the
+// hosted dashboard shows; this one shows what a local install serves.
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import Home from './app/page';
+import '@fontsource/dm-sans/400.css';
+import '@fontsource/dm-sans/500.css';
+import '@fontsource/dm-sans/600.css';
+import '@fontsource/dm-sans/700.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/600.css';
+import { configureApi } from './app/api';
+import { Dashboard, type View } from './app/dashboard';
 import './app/globals.css';
 
-createRoot(document.getElementById('root')!).render(<StrictMode><Home /></StrictMode>);
+// The sections a local install serves so far. Story, Changes, Chain of
+// thought and Playground follow; the initial scan is not kept locally yet.
+const VIEWS: View[] = ['prompts', 'search', 'sandboxes', 'calls', 'sandbox', 'context'];
+
+// Same origin as the proxy that serves this page, whatever its port.
+configureApi({ fetch: (path, init) => fetch(path, init) });
+
+createRoot(document.getElementById('root')!).render(<StrictMode><Dashboard views={VIEWS} /></StrictMode>);

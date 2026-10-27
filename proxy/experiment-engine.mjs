@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { TOOL_RESULT_KINDS } from './tool-metadata.mjs';
+import { TOOL_RESULT_KINDS, nativeFileOperation } from './tool-metadata.mjs';
 
 export const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const callTypes = new Set(['function_call', 'custom_tool_call', 'tool_use']);
@@ -26,9 +26,12 @@ export function describeCall(argsRaw) {
 /** The command a tool call proposed, as close to verbatim as its arguments
  * allow, for showing next to the process that actually ran. Shell tools carry
  * it as `cmd`/`command` (a string, or an argv whose `bash -lc` wrapper never
- * appears in what the model meant); anything else, such as a patch, falls
- * back to describeCall's plain-English reading. */
-export function proposedCommand(argsRaw) {
+ * appears in what the model meant); a native file tool (pass its `name`)
+ * carries the file it worked on; anything else, such as a patch, falls back
+ * to describeCall's plain-English reading. */
+export function proposedCommand(argsRaw, name) {
+  const native = name ? nativeFileOperation(name, argsRaw) : null;
+  if (native) return clip(native.text, 200);
   let args = argsRaw;
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { /* raw string args */ } }
   const value = args && typeof args === 'object' && !Array.isArray(args) ? (args.cmd ?? args.command ?? args.script) : args;
