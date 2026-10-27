@@ -46,7 +46,8 @@ export function localSandboxes({ dataDir }) {
   const registry = async () => { try { return JSON.parse(await readFile(registryFile, 'utf8')); } catch { return {}; } };
   let cached = null;
 
-  /** Every local sandbox: {id, name, status, created, container_id}. Throws
+  /** Every local sandbox: {id, name, status, created, container_id}, and its
+   * Playground forks (with fork_of). Throws
    * while the VM is stopped or unreachable, which says nothing about whether
    * the sandboxes exist (the forwarder must not take them for removed). */
   async function list() {
@@ -60,6 +61,14 @@ export function localSandboxes({ dataDir }) {
       return { id, name: box.name, root: box.root ?? null, created: box.created, status: container?.status ?? 'missing',
         container_id: container?.container_id ?? null, size_bytes: container?.size_bytes ?? null };
     });
+    // Playground forks of these sandboxes: their own containers, which the
+    // forwarder tails like any sandbox. Not sandboxes of the user's: `fork_of` says so.
+    for (const box of containers.values()) {
+      if (/^rtf-[a-f0-9]{32}$/.test(box.id) && boxes[box.fork_of]) {
+        value.push({ id: box.id, name: null, fork_of: box.fork_of, created: box.created, status: box.status,
+          container_id: box.container_id ?? null, size_bytes: box.size_bytes ?? null });
+      }
+    }
     cached = { at: Date.now(), value };
     return value;
   }

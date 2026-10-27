@@ -107,14 +107,24 @@ raytrace sandbox destroy my-box                 # asks whether to delete its log
   its exit code and what it reached on the network, each joined to the tool
   call that ran it. The raw collector feed is at http://localhost:8798.
   Nothing leaves your machine.
+- **Changes:** the sandbox's Claude Code hook snapshots the project after
+  every edit, so **Changes** shows what each prompt left different, file by
+  file, with a patch to take home.
+- **Playground:** rerun a session from any step with part of it changed (a
+  tool result, a file, the model, the message) and compare where it ends up,
+  optionally with a check command such as `npm test` as pass or fail. Each
+  rerun is a fork: a sandbox of its own in the VM, started from the snapshot
+  just before that step, running Claude Code on the sign-in you made in the
+  sandbox (so it uses your Claude account). The newest fork is kept, stopped,
+  for a day; destroying a sandbox destroys its forks.
 - **Signing in to your agent:** run `claude` inside the sandbox and sign in.
   RayTrace passes no key in. The sign-in stays in the sandbox until you destroy it.
 - **Destroying it:** `raytrace sandbox destroy <name>` deletes the sandbox and
   asks whether to delete the logs captured in it as well. Yes deletes them
-  everywhere, dashboard included. No moves them to
-  `~/.raytrace/archive/<name>-<time>/` (Claude Code transcripts, and the
-  recorded commands, files and connections as JSON lines), and its sessions
-  stay in your dashboard. `--delete-logs` or `--keep-logs` answers without
+  everywhere, dashboard included, Playground forks too. No moves them to
+  `~/.raytrace/archive/<name>-<time>/` (Claude Code transcripts, its forks'
+  under `forks/`, and the recorded commands, files and connections as JSON
+  lines), and its sessions stay in your dashboard. `--delete-logs` or `--keep-logs` answers without
   asking.
 - **What you need:** nothing to install on macOS 13.5 or later. RayTrace
   uses [Lima](https://lima-vm.io) for the VM: yours if you have Lima 2.0 or

@@ -14,10 +14,11 @@ import { configureApi } from './app/api';
 import { Dashboard, type View } from './app/dashboard';
 import './app/globals.css';
 
-// The sections a local install serves so far. Story's recap and Chain of
-// thought run on the user's own OpenRouter key (raytrace key openrouter).
-// Changes and Playground follow; the initial scan is not kept locally yet.
-const VIEWS: View[] = ['prompts', 'search', 'story', 'sandboxes', 'calls', 'sandbox', 'context', 'thought'];
+// The sections a local install serves. Story's recap and Chain of thought run
+// on the user's own OpenRouter key (raytrace key openrouter); Playground's
+// forks run Claude Code on the user's own sign-in, in the local VM. The
+// initial scan is not kept locally yet.
+const VIEWS: View[] = ['prompts', 'search', 'story', 'sandboxes', 'calls', 'changes', 'sandbox', 'context', 'thought', 'playground'];
 
 // Same origin as the proxy that serves this page, whatever its port.
 configureApi({ fetch: (path, init) => fetch(path, init) });

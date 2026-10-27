@@ -791,8 +791,14 @@ export function openEvidenceStore(file) {
      * refers to any more (payloads are shared by content, so one another
      * session uses stays). Returns how many sessions went. Used when a local
      * sandbox is destroyed with its logs. */
-    forgetSessions(externalIds) {
-      if (!externalIds.length) return 0;
+    forgetSessions(sessionIds) {
+      if (!sessionIds.length) return 0;
+      // A sandbox's Playground forks (lab_experiments, kind fork) go with it,
+      // and so do their own sessions, which are filed under the fork's id.
+      const parents = sessionIds.map(() => '?').join(',');
+      const forks = q(`SELECT id FROM lab_experiments WHERE kind = 'fork' AND json_extract(body_json, '$.parent') IN (${parents})`)
+        .all(...sessionIds).map((row) => row.id);
+      const externalIds = [...sessionIds, ...forks];
       const marks = externalIds.map(() => '?').join(',');
       // Runtime events, syscalls and their classifications are append-only
       // (schema/runtime_evidence.sql, classification.sql):
@@ -824,7 +830,7 @@ export function openEvidenceStore(file) {
           `DELETE FROM agent_context_items WHERE exchange_id IN (${exchanges})`,
           `DELETE FROM agent_tool_calls WHERE exchange_id IN (${exchanges})`,
           `DELETE FROM exchange_summaries WHERE exchange_id IN (${exchanges})`,
-          `DELETE FROM lab_experiments WHERE exchange_id IN (${exchanges})`,
+          `DELETE FROM lab_experiments WHERE exchange_id IN (${exchanges}) OR id IN (${marks})`,
           `DELETE FROM agent_exchanges WHERE session_id IN (${sessions})`,
           `DELETE FROM agent_turns WHERE session_id IN (${sessions})`,
         ]) {

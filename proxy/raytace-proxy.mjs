@@ -421,7 +421,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/raytace/sandboxes') {
     const shape = (box, status) => ({ id: box.id, name: box.name, host: 'lima', on_host: true, status, created: box.created,
       deleted: null, size_bytes: box.size_bytes ?? null, imported_bytes: null, transcripts: true, skipped_count: 0, scan: null });
-    try { return json(200, { sandboxes: (await sandboxes.list()).map((box) => shape(box, box.status === 'running' ? 'running' : 'stopped')) }); }
+    try { return json(200, { sandboxes: (await sandboxes.list()).filter((box) => !box.fork_of).map((box) => shape(box, box.status === 'running' ? 'running' : 'stopped')) }); }
     catch { return json(200, { sandboxes: (await sandboxes.known()).map((box) => shape(box, 'stopped')) }); }
   }
   // What the kernel layer saw a sandbox do: the fact engine's records in the VM.

@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { paths } from './paths.mjs';
-import { portInUse, start as startProxy } from './proxy-process.mjs';
+import { portInUse, runningPid, start as startProxy, stop as stopProxy } from './proxy-process.mjs';
 import { readConfig } from './config.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
 
@@ -265,7 +265,10 @@ export async function destroy(ref, flags, { ask, interactive }) {
   }
 
   ensureVm();
-  const exists = JSON.parse(projects(['list']).stdout || '[]').some((item) => item.id === id);
+  const inVmNow = JSON.parse(projects(['list']).stdout || '[]');
+  const exists = inVmNow.some((item) => item.id === id);
+  // Its Playground forks, which are sandboxes of their own in the VM.
+  const forks = inVmNow.filter((item) => item.fork_of === id).map((item) => item.id);
   // Stopped first: stopping is recorded too, and must not land after the logs are dealt with.
   if (exists) projects(['stop', id]);
   if (deleteLogs) {
@@ -284,16 +287,28 @@ export async function destroy(ref, flags, { ask, interactive }) {
     for (const from of [transcripts(id), earlierTranscripts(id)]) {
       if (existsSync(from)) { renameSync(from, join(folder, 'claude-code')); break; }
     }
+    // Forks' transcripts are filed under their own ids; their recorded
+    // commands are already in the dashboard, with the forks themselves.
+    for (const fork of forks) {
+      if (!existsSync(transcripts(fork))) continue;
+      mkdirSync(join(folder, 'forks'), { recursive: true, mode: 0o700 });
+      renameSync(transcripts(fork), join(folder, 'forks', fork));
+    }
     rmSync(join(paths.home, 'sandboxes', id), { recursive: true, force: true });
     say(`Logs moved to ${folder}`);
     say('Its Claude Code sessions stay in your dashboard.');
   }
   // The VM's record of it goes either way: deleted, or by now in the archive.
+  for (const fork of forks) projects(['fork-delete', fork, '--forget-evidence']);
+  if (deleteLogs) for (const fork of forks) rmSync(transcripts(fork), { recursive: true, force: true });
   if (exists) projects(['delete', id, '--confirm', id, '--forget-evidence']);
   const boxes = registry();
   delete boxes[id];
   save(boxes);
-  say(`${box.name} destroyed${deleteLogs ? ', with its logs' : ''}.`);
+  say(`${box.name} destroyed${forks.length ? `, with its ${forks.length} Playground fork${forks.length === 1 ? '' : 's'}` : ''}${deleteLogs ? ', and its logs' : ''}.`);
+  // The proxy keeps the Playground's forks in memory: one this CLI started is
+  // restarted, so the forks just deleted are not listed any more.
+  if (deleteLogs && forks.length && runningPid()) { await stopProxy(); await startProxy(); }
 }
 
 /** A terminal in the sandbox, through the VM. Leaving it keeps the sandbox running. */

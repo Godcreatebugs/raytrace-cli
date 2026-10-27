@@ -246,7 +246,7 @@ def safe_path(path):
         raise ValueError('Invalid workspace path: ' + path[:80])
     return '/workspace/' + str(parts)
 
-def fork_action(action, fork):
+def fork_action(action, fork, forget=False):
     if not re.fullmatch(FORK_ID, fork):
         raise ValueError('Invalid fork ID')
     if action == 'fork-create':
@@ -267,8 +267,9 @@ def fork_action(action, fork):
         # The project folder as the snapshot has it, and nothing else.
         archive = as_node(parent, 'git', '--git-dir='+SNAPSHOTS, 'archive', '--format=tar', commit)
         as_node(fork, 'tar', '-x', '-C', '/workspace', data=archive)
-        # The user's Claude Code sign-in and the sandbox's RayTrace token.
-        wanted = ['.claude/.credentials.json', '.claude.json', '.claude/settings.json', '.raytace-codex/config.toml']
+        # The user's Claude Code sign-in and the sandbox's RayTrace token (a
+        # local sandbox keeps it in .raytace/sandbox-token, a hosted one in its Codex config).
+        wanted = ['.claude/.credentials.json', '.claude.json', '.claude/settings.json', '.raytace/sandbox-token', '.raytace-codex/config.toml']
         present = [path for path in wanted if subprocess.run(['docker', 'exec', '-u', '1000', parent, 'test', '-f', '/home/node/'+path]).returncode == 0]
         if present:
             as_node(fork, 'tar', '-x', '-C', '/home/node', data=as_node(parent, 'tar', '-c', '-C', '/home/node', *present))
@@ -355,6 +356,9 @@ def fork_action(action, fork):
         state, parent = fork_state(fork)
         subprocess.run(['docker', 'rm', '-f', fork], stdout=subprocess.DEVNULL, check=True)
         (CONTAINERS / (state['Id']+'.json')).unlink(missing_ok=True)
+        # With --forget-evidence (its project destroyed with its logs), what the collector recorded of it too.
+        if forget:
+            evidence(state['Id'], forget=True)
         for suffix in ('workspace', 'home'):
             volume = fork+'-'+suffix
             result = subprocess.run(['docker', 'volume', 'inspect', volume], capture_output=True, text=True)
@@ -557,7 +561,7 @@ def main():
         print(json.dumps(result))
         return
     if opts.action.startswith('fork-'):
-        return fork_action(opts.action, opts.id or '')
+        return fork_action(opts.action, opts.id or '', opts.forget_evidence)
     if not opts.id or not re.fullmatch(PROJECT_ID, opts.id):
         parser.error('Invalid sandbox ID')
     if opts.action == 'create':
