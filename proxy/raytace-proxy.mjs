@@ -8,7 +8,7 @@ import { realpathSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { join, dirname, resolve, extname, sep } from 'node:path';
-import { exchangesFromTranscript, parseTranscript } from './claude-code-adapter.mjs';
+import { exchangesFromTranscript, parseTranscript, toolResultsFromTranscript } from './claude-code-adapter.mjs';
 import { replayEligibility, createExperiment, runExperiment } from './experiment-engine.mjs';
 import { loadEnvFile } from 'node:process';
 import { providerConfig, routeRequest, selectModel } from './providers.mjs';
@@ -310,10 +310,14 @@ function serially(path, job) {
  * transcript's own session, and ties its processes to them afterwards. */
 function ingestClaudeCode(path, { final, session = null }) {
   serially(path, async () => {
-    const rows = exchangesFromTranscript(parseTranscript(await readFile(path, 'utf8')),
+    const lines = parseTranscript(await readFile(path, 'utf8'));
+    const rows = exchangesFromTranscript(lines,
       { final, sessionId: session?.id ?? null, sessionStartedAt: session?.startedAt ?? null });
     for (const row of rows) {
       await record({ ...row, request: { ...row.request, payload: redact(row.request.payload) }, response: { ...row.response, payload: redact(row.response.payload) } });
+    }
+    for (const [callId, item] of toolResultsFromTranscript(lines)) {
+      db.recordToolResult?.(callId, item);
     }
     if (session) await attributeLateProcesses(db, session.id);
   }).catch((error) => console.error(`Claude Code transcript ${path} could not be read: ${error.message}`));

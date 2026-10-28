@@ -753,6 +753,27 @@ export function openEvidenceStore(file) {
       return new Map(rows.map((row) => [row.external_call_id, {
         tool_name: row.tool_name, args: getPayload(row.arguments_sha), result: getPayload(row.reported_result_sha) }]));
     },
+    toolCallResult(externalCallId) {
+      if (!externalCallId) return null;
+      const row = q(`SELECT c.reported_result_sha
+        FROM agent_tool_calls c JOIN agent_exchanges e ON e.id = c.exchange_id
+        WHERE c.external_call_id = ? AND c.reported_result_sha IS NOT NULL
+        ORDER BY e.started_at_ms DESC LIMIT 1`).get(externalCallId);
+      return row ? getPayload(row.reported_result_sha) : null;
+    },
+    recordToolResult(externalCallId, resultItem) {
+      if (!externalCallId || !resultItem) return null;
+      const call = q(`SELECT c.id FROM agent_tool_calls c
+        JOIN agent_exchanges e ON e.id = c.exchange_id
+        WHERE c.external_call_id = ?
+        ORDER BY e.started_at_ms DESC LIMIT 1`).get(externalCallId);
+      if (!call) return null;
+      const payloadSha = putPayload(resultItem);
+      setReportedResult.run(payloadSha, call.id);
+      checkReported({ toolCallId: call.id });
+      indexGuarded(() => indexCall(call.id));
+      return call.id;
+    },
     getCallAssessment(key) { return fromJson(q('SELECT body_json FROM call_assessments WHERE key = ?').get(key)?.body_json ?? null); },
     putCallAssessment(key, callId, model, value) {
       q('INSERT OR REPLACE INTO call_assessments (key, call_id, model, created_at_ms, body_json) VALUES (?,?,?,?,?)')
