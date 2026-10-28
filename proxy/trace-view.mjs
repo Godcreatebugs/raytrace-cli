@@ -151,6 +151,25 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
   // heuristic (succeeded, based on scanning the result text) wherever no
   // process was tied to the call, e.g. a session run outside the sandbox.
   for (const trace of grouped.values()) {
+    const shownResults = shownResultsByTrace.get(trace.id) || new Set();
+    const traceOrigins = [...origins.values()].filter((origin) => origin.trace_id === trace.id);
+    for (const origin of traceOrigins) {
+      if (!shownResults.has(origin.call_id)) {
+        const reported = db?.toolCallResult ? await db.toolCallResult(origin.call_id) : null;
+        if (reported) {
+          const rawItem = (reported && typeof reported === 'object')
+            ? { ...reported, call_id: origin.call_id }
+            : { call_id: origin.call_id, output: reported };
+          trace.events.push({
+            ...event(toolKind(origin.name), `Tool result: ${origin.name}`,
+              toolResultStatus(rawItem), trace.endedAt, rawItem),
+            exchange_id: origin.exchange_id,
+            output_index: origin.output_index
+          });
+          shownResults.add(origin.call_id);
+        }
+      }
+    }
     const spanIds = trace.requests.map((request) => request.id);
     const divergenceRows = (await db.divergence(spanIds)).filter((row) => row.call_id);
     const byCallId = new Map(divergenceRows.map((row) => [row.call_id, row]));
@@ -218,7 +237,6 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
     // `origins` already has one entry per call_id with the exchange that
     // proposed it, so this is just that, decorated with whatever real
     // execution data (if any) `divergence()` found for the same call_id.
-    const traceOrigins = [...origins.values()].filter((origin) => origin.trace_id === trace.id);
     // Where a sandboxed Claude Code's project folder stood after each call.
     const snapshots = await db.snapshotsForCalls(traceOrigins.map((origin) => origin.call_id));
     trace.callVerifications = traceOrigins.map((origin) => {

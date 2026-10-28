@@ -137,6 +137,25 @@ function outputItem(block, messageId, index) {
   return null;
 }
 
+export function toolResultsFromTranscript(lines) {
+  const results = new Map();
+  for (const line of lines) {
+    if (line?.type === 'user' && Array.isArray(line.message?.content)) {
+      for (const part of line.message.content) {
+        if (part?.type === 'tool_result' && part.tool_use_id) {
+          results.set(part.tool_use_id, {
+            type: 'function_call_output',
+            call_id: part.tool_use_id,
+            output: toolOutput(part.content),
+            ...(part.is_error ? { is_error: true } : {})
+          });
+        }
+      }
+    }
+  }
+  return results;
+}
+
 /** Parses JSONL text; a partial last line (still being written) is dropped. */
 export function parseTranscript(text) {
   const lines = [];
