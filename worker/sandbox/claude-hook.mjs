@@ -101,9 +101,12 @@ if (input.hook_event_name === 'PreToolUse') {
   if (input.tool_name === 'Bash' && /^[A-Za-z0-9_-]{1,128}$/.test(id ?? '') && typeof command === 'string') {
     // An input change needs a decision with it. Only a session that already
     // skips permission prompts gets "allow"; any other still asks as usual,
-    // unless running in headless/CI agent mode with RAYTRACE_ALLOW_ALL=1.
-    const allowAll = process.env.RAYTRACE_ALLOW_ALL === '1' || process.env.RAYTRACE_ALLOW_ALL === 'true';
-    const decision = (input.permission_mode === 'bypassPermissions' || allowAll) ? 'allow' : 'ask';
+    // unless running in headless/CI agent mode (CI, GitHub Actions, or RAYTRACE_ALLOW_ALL/RAYTRACE_HEADLESS=1).
+    const isCI = process.env.CI === 'true' || process.env.CI === '1' || Boolean(process.env.GITHUB_ACTIONS);
+    const allowAll = isCI || process.env.RAYTRACE_ALLOW_ALL === '1' || process.env.RAYTRACE_ALLOW_ALL === 'true'
+      || process.env.RAYTRACE_HEADLESS === '1' || process.env.HEADLESS === '1';
+    const isBypass = input.permission_mode === 'bypassPermissions' || input.permission_mode === 'dontAsk';
+    const decision = (isBypass || allowAll) ? 'allow' : 'ask';
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision,
       updatedInput: { ...input.tool_input, command: `export RAYTRACE_CALL_ID=${id}\n${command}` } } }));
   }
