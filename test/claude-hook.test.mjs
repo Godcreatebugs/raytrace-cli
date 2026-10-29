@@ -64,3 +64,21 @@ test('PreToolUse allows commands when permission_mode is bypassPermissions', asy
   const res = await runHook({}, input);
   assert.equal(res.hookSpecificOutput?.permissionDecision, 'allow');
 });
+
+test('PreToolUse allows commands automatically in CI or GitHub Actions environment', async () => {
+  const input = {
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_use_id: 'call_test_ci',
+    tool_input: { command: 'cargo test' },
+    permission_mode: 'ask'
+  };
+  const ciRes = await runHook({ CI: 'true' }, input);
+  assert.equal(ciRes.hookSpecificOutput?.permissionDecision, 'allow');
+
+  const ghaRes = await runHook({ GITHUB_ACTIONS: 'true' }, input);
+  assert.equal(ghaRes.hookSpecificOutput?.permissionDecision, 'allow');
+
+  const headlessRes = await runHook({ RAYTRACE_HEADLESS: '1' }, input);
+  assert.equal(headlessRes.hookSpecificOutput?.permissionDecision, 'allow');
+});
