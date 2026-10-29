@@ -33,7 +33,44 @@ function allHooks(settings) {
 export function hookState() {
   const settings = readSettings();
   const hooks = allHooks(settings);
-  return { file: settingsFile(), installed: EVENTS.every((event) => (settings.hooks?.[event] ?? []).some((group) => (group.hooks ?? []).some(isOurs))), repoHook: hooks.some(isRepoHook) };
+  const repoHook = hooks.some(isRepoHook);
+
+  const missingEvents = [];
+  let invalidType = false;
+  let invalidMatcher = false;
+  let duplicates = false;
+
+  for (const event of EVENTS) {
+    const groups = settings.hooks?.[event] ?? [];
+    let count = 0;
+
+    for (const group of groups) {
+      for (const hook of group.hooks ?? []) {
+        if (isOurs(hook)) {
+          count += 1;
+          if (hook.type !== 'command') invalidType = true;
+          if (event === 'PostToolUse' && group.matcher && group.matcher !== '*') invalidMatcher = true;
+        }
+      }
+    }
+
+    if (count === 0) missingEvents.push(event);
+    else if (count > 1) duplicates = true;
+  }
+
+  const installed = missingEvents.length === 0;
+  const valid = installed && !invalidType && !invalidMatcher && !duplicates;
+
+  return {
+    file: settingsFile(),
+    installed,
+    valid,
+    missingEvents,
+    invalidType,
+    invalidMatcher,
+    duplicates,
+    repoHook
+  };
 }
 
 /** Installs (or with remove, removes) the hook. Returns the settings file. */

@@ -18,6 +18,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test test/*.test.mjs proxy/*.test.mjs",
     "build": "vite build --config dashboard/vite.config.mjs",
     "dashboard:dev": "vite --config dashboard/vite.config.mjs",
     "typecheck": "tsc --noEmit",

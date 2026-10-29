@@ -87,7 +87,7 @@ function limactl(args, { input, inherit = false, log = false, check = true } = {
 }
 
 /** A command in the VM as root: projects.py and setup.py run there. */
-const inVm = (args, options) => limactl(['shell', '--workdir', '/', VM, 'sudo', ...args], options);
+export const inVm = (args, options) => limactl(['shell', '--workdir', '/', VM, 'sudo', ...args], options);
 const projects = (args, options) => inVm(['python3', '/opt/raytace/projects.py', ...args], options);
 
 /** Removes the RayTrace VM and every local sandbox in it; false when there was none. */

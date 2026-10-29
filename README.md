@@ -187,8 +187,26 @@ raytrace key              # which keys are set
 | `raytrace sandbox create --local [--name <name>]` | the same sandbox in a Linux VM on this machine; offers to download Lima if needed (`--yes` skips the question) |
 | `raytrace sandbox list --local` | your local sandboxes; their names work with `connect`, `start`, `stop` and `destroy` |
 | `raytrace sandbox destroy <name> [--delete-logs \| --keep-logs]` | delete a local sandbox; asks whether its captured logs go too, or move to `~/.raytrace/archive` |
+| `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded trace to terminal or owner-only file without running the proxy |
 | `raytrace doctor` | what this machine has and lacks, local sandboxes included |
 | `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features; asked for, never taken as an argument |
+
+## Exporting traces
+
+Export a recorded session directly from local evidence, even when RayTrace and the VM are stopped:
+
+```sh
+# View trace in terminal as Markdown
+raytrace export <trace-id>
+
+# Export structured JSON
+raytrace export <trace-id> --format json
+
+# Save report to a file with owner-only (0600) permissions
+raytrace export <trace-id> --format markdown --output trace.md
+```
+
+Exported traces contain the full turn prompt, answer, tool calls, exit codes, and observed sandbox execution. Output files refuse to overwrite existing files to prevent accidental data loss.
 
 ## Privacy
 

@@ -1,8 +1,8 @@
 // Small, dependency-free helpers over TraceEvent shared between the timeline
 // (app/page.tsx) and the graph view (app/trace-graph.tsx), so "did this
 // exchange fail" is computed identically in both places instead of drifting.
-import { type TraceBlock, type TraceEvent } from './types';
-import { type RequestMetric } from './request-metrics';
+import type { TraceBlock, TraceEvent } from './types';
+import type { RequestMetric } from './request-metrics';
 
 export function isCompletion(event: TraceEvent) { return event.title.startsWith('Exchange complete'); }
 
@@ -67,7 +67,18 @@ export function reportedResult(events: TraceEvent[], callId: string): Reported {
   });
   if (!event) return { state: 'none', code: null, output: '' };
   let output = '';
-  try { const raw = JSON.parse(event.raw); output = typeof raw.output === 'string' ? raw.output : JSON.stringify(raw.output ?? ''); } catch { /* unreadable */ }
+  let isError = false;
+  let explicitCode: number | null = null;
+  try {
+    const raw = JSON.parse(event.raw);
+    const content = raw.output ?? raw.content;
+    output = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+    isError = raw.is_error === true || raw.status === 'failed';
+    const codeVal = typeof raw.exit_code === 'number' ? raw.exit_code : (content && typeof content === 'object' && typeof content.exit_code === 'number' ? content.exit_code : null);
+    if (typeof codeVal === 'number') explicitCode = codeVal;
+  } catch { /* unreadable */ }
+  if (isError) return { state: 'failed', code: explicitCode, output };
+  if (explicitCode !== null) return { state: explicitCode === 0 ? 'ok' : 'failed', code: explicitCode, output };
   if (/Rejected\(/.test(output)) return { state: 'rejected', code: null, output };
   const code = Number(output.match(/Process exited with code (\d+)/)?.[1] ?? NaN);
   if (Number.isFinite(code)) return { state: code === 0 ? 'ok' : 'failed', code, output };

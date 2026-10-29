@@ -42,6 +42,16 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 
+/** Read-only check for running proxy pid; does not remove stale PID file. */
+export function checkRunningPid() {
+  if (!existsSync(paths.proxyPid)) return null;
+  try {
+    const pid = Number(readFileSync(paths.proxyPid, 'utf8').trim());
+    if (Number.isInteger(pid) && pid > 0 && alive(pid)) return pid;
+  } catch { /* unreadable */ }
+  return null;
+}
+
 /** The pid this CLI started, if that process is still running. */
 export function runningPid() {
   if (!existsSync(paths.proxyPid)) return null;
@@ -79,7 +89,7 @@ export async function start() {
     return { ...(await start()), replaced: true };
   }
   if (await portInUse(port)) throw new Error(`Port ${port} is in use by something that is not answering as RayTrace. Free it, or set RAYTACE_PORT in ${paths.config}.`);
-  if (!existsSync(paths.dashboard)) throw new Error(`The dashboard is missing from ${paths.dashboard}. Reinstall @raytrace/cli.`);
+  if (!existsSync(paths.dashboard)) throw new Error(`The dashboard is missing from ${paths.dashboard}. Reinstall @raytrace-cli/cli.`);
 
   mkdirSync(paths.logs, { recursive: true });
   mkdirSync(paths.run, { recursive: true });

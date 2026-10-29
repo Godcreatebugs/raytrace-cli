@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { requestMetrics } from './request-metrics.mjs';
 import { redact, parseSseResponse } from './capture.mjs';
+import { trustedOrigin as originAllowed, trustedRequest } from './request-policy.mjs';
 /** Local API recorder. Point a compatible client at http://127.0.0.1:8797. */
 import { createServer } from 'node:http';
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
@@ -62,11 +63,7 @@ const dbFile = process.env.RAYTACE_DB || join(dirname(store), 'evidence.db');
 const archiveJsonl = process.env.RAYTACE_ARCHIVE_JSONL === '1';
 const db = openEvidenceStore(dbFile);
 const allowedOrigins = new Set((process.env.RAYTACE_UI_ORIGINS || '').split(',').filter(Boolean));
-function trustedOrigin(origin) {
-  if (!origin) return true;
-  if (allowedOrigins.has(origin)) return true;
-  try { const url = new URL(origin); return url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname); } catch { return false; }
-}
+const trustedOrigin = (origin) => originAllowed(origin, allowedOrigins);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 // Command severity (Jev). Without TYPESAFE_API_KEY, or when a request fails,
 // only the rule floor is shown -- and only where a rule actually fired.
@@ -337,7 +334,7 @@ const playground = startPlayground({ db, transcriptsDir: sandboxTranscripts,
   hookSource: () => readFileSync(new URL('../worker/sandbox/claude-hook.mjs', import.meta.url), 'utf8') });
 async function appendSandboxTranscript(sandbox, note) {
   if (!CLAUDE_SESSION_ID.test(note?.session_id ?? '') || !Number.isInteger(note.offset) || note.offset < 0
-    || typeof note.text !== 'string' || (note.text && !note.text.endsWith('\n'))) return { status: 400, body: { error: 'Expected session_id, offset and whole transcript lines.' } };
+    || typeof note.text !== 'string' || (note.more !== undefined && typeof note.more !== 'boolean')) return { status: 400, body: { error: 'Expected session_id, offset and a text fragment with optional more flag.' } };
   const directory = join(sandboxTranscripts, sandbox);
   const path = join(directory, `${note.session_id}.jsonl`);
   return serially(path, async () => {
@@ -401,22 +398,22 @@ async function ingestFromSandbox(sandbox, note) {
     try { db.recordSnapshot({ sessionId: filedUnder, agentSessionId: note.session_id, snapshot }); }
     catch (error) { console.error(`Snapshot for ${filedUnder} could not be recorded: ${error.message}`); }
   }
-  if (written.path) ingestClaudeCode(written.path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name),
+  if (written.path) ingestClaudeCode(written.path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name) && note.more !== true,
     session: { id: filedUnder, startedAt: fork ? fork.created_at : await sandboxes.createdAt(sandbox) } });
   return written;
 }
 
 const server = createServer(async (req, res) => {
+  // Guard every route before either dashboard assets or paid provider calls.
+  if (!trustedRequest(req, allowedOrigins)) {
+    res.writeHead(403); return res.end('Untrusted dashboard origin or host.');
+  }
   const fromAgent = req.headers.authorization || req.headers['x-api-key'] || req.headers['anthropic-version'];
   if (dashboardDir && req.method === 'GET' && !fromAgent && !req.url?.startsWith('/raytace/') && !req.url?.startsWith('/v1/')) {
     try { return await serveDashboard(req, res); }
     catch { res.writeHead(404); return res.end('Dashboard not built.'); }
   }
   const localApi = req.url?.startsWith('/raytace/');
-  // Paid replay endpoints require a preflighted custom header and trusted origin.
-  if (localApi && (!trustedOrigin(req.headers.origin) || !/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.host || ''))) {
-    res.writeHead(403); return res.end('Untrusted dashboard origin or host.');
-  }
   const corsHeaders = { ...(req.headers.origin && trustedOrigin(req.headers.origin) ? { 'access-control-allow-origin': req.headers.origin } : {}), vary: 'Origin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS', 'access-control-allow-headers': 'content-type,x-raytace-experiment,if-none-match', 'access-control-allow-private-network': 'true' };
   const json = (status, value) => { res.writeHead(status, { 'content-type': 'application/json', ...corsHeaders, 'cache-control': 'no-store' }); res.end(JSON.stringify(redact(omitToolChunkIds(value)))); };
   if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders); return res.end(); }
@@ -648,7 +645,7 @@ const server = createServer(async (req, res) => {
     const path = claudeCodeTranscriptPath(note?.transcript_path);
     if (!path) return json(400, { error: 'transcript_path must be a Claude Code transcript under ~/.claude/projects.' });
     json(202, { accepted: true });
-    ingestClaudeCode(path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name) });
+    ingestClaudeCode(path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name) && note.more !== true });
     return;
   }
   if (localApi && (req.method !== 'POST' || !['/raytace/experiments', '/raytace/step-runs','/raytace/explanations', '/raytace/attribution', '/raytace/summaries', '/raytace/prompt-context/summary', '/raytace/forks', '/raytace/recap'].includes(req.url))) return json(404, { error: 'Unknown local endpoint.' });

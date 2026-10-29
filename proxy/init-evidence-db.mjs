@@ -131,6 +131,36 @@ function seed(db, data, fresh, adding = false) {
   for (const [id, label, description] of fileLabels) insertOrVerify(db, 'file_labels', 'id', { id, label, description }, fresh);
 }
 
+/** Verifies an existing database is compatible without mutating it. */
+export function verifyEvidenceDatabase(outputPath) {
+  if (typeof outputPath !== 'string' || !outputPath.trim() || outputPath === ':memory:') {
+    throw Error('An explicit standalone database file path is required');
+  }
+  if (!existsSync(outputPath)) {
+    throw Error(`Database file does not exist: ${outputPath}`);
+  }
+  const path = realpathSync(outputPath);
+  const sql = schemaSql();
+  const reference = new DatabaseSync(':memory:');
+  let db;
+  try {
+    reference.exec('PRAGMA foreign_keys=ON');
+    reference.exec(sql);
+    const expected = structure(reference);
+    db = new DatabaseSync(path, { readOnly: true });
+    const existing = structure(db);
+    const version = db.prepare('PRAGMA user_version').get()?.user_version;
+    if (version !== SCHEMA_VERSION) {
+      throw Error(`Incompatible schema version ${version}; expected ${SCHEMA_VERSION}`);
+    }
+    same(existing, expected, 'schema structure');
+    return { path, schemaVersion: version };
+  } finally {
+    db?.close();
+    reference.close();
+  }
+}
+
 /** Creates a new standalone database, or verifies an existing compatible one. */
 export function initializeEvidenceDatabase(outputPath) {
   if (typeof outputPath !== 'string' || !outputPath.trim() || outputPath === ':memory:') {

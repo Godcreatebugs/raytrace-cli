@@ -645,8 +645,9 @@ def main():
         if opts.action == 'start':
             return
         # Exiting this shell or Codex never stops/removes the persistent container.
-        run('docker', 'exec', '-it', opts.id, '/bin/bash', '-c',
-            'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; exec /bin/bash')
+        proc = subprocess.run(['docker', 'exec', '-it', opts.id, '/bin/bash', '-c',
+            'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; exec /bin/bash'], check=False)
+        sys.exit(proc.returncode)
     elif opts.action == 'stop':
         run('docker', 'stop', '-t', '10', opts.id)
     elif opts.action == 'delete':

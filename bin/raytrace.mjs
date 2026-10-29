@@ -36,6 +36,12 @@ Local sandboxes (your project stays on this machine):
   Recorded commands, files and connections: http://localhost:8798.
   macOS and Linux; Windows is experimental. raytrace doctor shows what is missing.
 
+Export recorded traces:
+  raytrace export <trace-id>                view trace details in terminal as Markdown
+  raytrace export <trace-id> --format json  export trace structured as JSON
+  raytrace export <trace-id> --output <file>
+                                            save export to file with owner-only permissions
+
 AI features in the dashboard (summaries, recaps, Chain of thought), on your own key:
   raytrace key                              which keys are set
   raytrace key openrouter                   add your OpenRouter key (asked for, not echoed)
@@ -123,6 +129,37 @@ if (command === 'sandbox') {
   if (!action) { console.error(`Unknown sandbox command: ${sub ?? '(none)'}\n\n${HELP}`); process.exit(2); }
   try { await action(); process.exit(0); }
   catch (error) { console.error(`raytrace sandbox ${sub}: ${error.message}`); process.exit(1); }
+}
+
+if (command === 'export') {
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
+      format: { type: 'string' },
+      output: { type: 'string' },
+    } });
+  } catch (error) {
+    console.error(`${error.message}\n\nUsage: raytrace export <trace-id> [--format json|markdown] [--output <file>]`);
+    process.exit(2);
+  }
+  const [traceId, ...extra] = parsed.positionals;
+  if (!traceId || extra.length > 0) {
+    console.error('Usage: raytrace export <trace-id> [--format json|markdown] [--output <file>]');
+    process.exit(2);
+  }
+  const format = parsed.values.format ?? 'markdown';
+  if (format !== 'markdown' && format !== 'json') {
+    console.error(`Invalid format: ${format}. Expected 'markdown' or 'json'.`);
+    process.exit(2);
+  }
+  const { exportCommand } = await import('../src/export.mjs');
+  try {
+    await exportCommand(traceId, { format, output: parsed.values.output });
+    process.exit(0);
+  } catch (error) {
+    console.error(`raytrace export: ${error.message}`);
+    process.exit(1);
+  }
 }
 
 let flags;

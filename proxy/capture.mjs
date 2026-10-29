@@ -16,16 +16,16 @@ export function redact(value) {
  * one (Responses API), else its events; null when nothing parsed. */
 export function parseSseResponse(body) {
   const events = [];
-  let completedResponse = null;
+  let terminalResponse = null;
   for (const frame of body.toString('utf8').replace(/\r\n/g, '\n').split('\n\n')) {
     const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
     if (!data || data === '[DONE]') continue;
     try {
       const event = JSON.parse(data);
       events.push(event);
-      if (event.type === 'response.completed' && event.response) completedResponse = event.response;
+      if (['response.completed', 'response.failed', 'response.incomplete'].includes(event.type) && event.response) terminalResponse = event.response;
     } catch { /* retain the raw response hash when an SSE event is not JSON */ }
   }
-  if (completedResponse) return completedResponse;
+  if (terminalResponse) return terminalResponse;
   return events.length ? { stream: true, events } : null;
 }

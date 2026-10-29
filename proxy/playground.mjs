@@ -200,6 +200,9 @@ export function startPlayground({ db, transcriptsDir, hookSource, log = console.
     const command = typeof config.check === 'string' ? config.check.trim() : '';
     if (command.length > 2000) throw new Error('The check command must be under 2000 characters.');
     if (controllers.size || queue.length) throw new Error('A fork is already running. Wait for it or delete it first.');
+    if ([...forks.values()].some((job) => job.recovery_stop_pending && !job.deleted_at)) {
+      throw new Error('A previous fork could not be stopped after a restart. Retry recovery or delete that fork before starting another.');
+    }
     const repeat = Math.min(maxRepeat, Math.max(1, Math.trunc(Number(config.repeat)) || 1));
     const found = await locate(config.exchange_id, results);
     if (!found) throw new Error('That step is not from a sandboxed Claude Code session, so it cannot be forked.');
@@ -366,7 +369,7 @@ export function startPlayground({ db, transcriptsDir, hookSource, log = console.
   async function retire(newest = null) {
     const now = Date.now();
     for (const job of forks.values()) {
-      if (job.deleted_at || job.keep || job.status === 'queued' || controllers.has(job.id)) continue;
+      if (job.deleted_at || job.keep || job.recovery_stop_pending || job.status === 'queued' || controllers.has(job.id)) continue;
       const stale = job.id !== newest && (newest || now - Date.parse(job.created_at) > KEEP_LATEST_MS);
       if (stale) await remove(job.id).catch((error) => log(`[raytace][playground] could not delete ${job.id.slice(0, 12)}: ${error.message}`));
     }
@@ -375,9 +378,34 @@ export function startPlayground({ db, transcriptsDir, hookSource, log = console.
   /** After a restart: a fork that was mid-run cannot be followed any more. */
   async function recover() {
     for (const job of forks.values()) {
-      if (['queued', 'creating', 'running', 'collecting', 'checking'].includes(job.status) && !controllers.has(job.id)) {
+      if (!job.deleted_at && ['queued', 'creating', 'running', 'collecting', 'checking'].includes(job.status) && !controllers.has(job.id)) {
+        if (job.status !== 'queued') {
+          // The worker may have survived the service and its timeout controller.
+          // Retaining a recent or kept fork must retain its files, not its execution.
+          job.recovery_stop_pending = true; // block new work while the stop is in flight too
+          try {
+            await vmJson('fork-stop', job.id, null);
+          } catch (error) {
+            // A creating job may not have made its container. Confirm absence
+            // with a successful host inventory; an unreachable host proves nothing.
+            let absent = false;
+            try {
+              const inventory = await vmAction('list', null, null);
+              const boxes = inventory.code === 0 ? JSON.parse(inventory.stdout) : null;
+              absent = Array.isArray(boxes) && !boxes.some((box) => box.id === job.id);
+            } catch { /* keep the unknown state visible and retryable */ }
+            if (!absent) {
+              job.recovery_stop_pending = true;
+              job.error = `RayTrace restarted. Could not confirm this fork stopped: ${String(error.message ?? error).slice(0, 300)}. Restart RayTrace to retry recovery, or delete the fork.`;
+              save(job);
+              log(`[raytace][playground] ${job.id.slice(0, 12)} recovery stop failed: ${job.error}`);
+              continue;
+            }
+          }
+        }
+        delete job.recovery_stop_pending;
         if (job.status === 'queued') job.deleted_at = new Date().toISOString(); // never had a sandbox
-        job.error = job.status === 'queued' ? 'RayTrace restarted before this run started.' : 'RayTrace restarted while this fork was running.';
+        job.error = job.status === 'queued' ? 'RayTrace restarted before this run started.' : 'RayTrace restarted while this fork was running; its sandbox is stopped or no longer exists.';
         job.status = 'interrupted';
         if (job.check && ['pending', 'running'].includes(job.check.status)) job.check.status = 'error';
         save(job);

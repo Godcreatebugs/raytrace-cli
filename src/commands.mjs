@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig, writeConfig } from './config.mjs';
-import { healthy, portInUse, runningPid, start, status, stop } from './proxy-process.mjs';
+import { checkRunningPid, healthy, portInUse, runningPid, start, status, stop } from './proxy-process.mjs';
 import { HOOK_COMMAND, hookState, setHook } from './claude-code.mjs';
 import { askSecret, confirm, interactive } from './prompt.mjs';
 
@@ -60,7 +60,7 @@ export async function setup(flags) {
 
   if (hookClaude && !onPath('raytrace')) {
     say(`\n  Warning: \`raytrace\` is not on your PATH, and Claude Code's hook runs \`${HOOK_COMMAND}\`.`);
-    say('  Install it globally so the hook can find it:  npm install -g @raytrace/cli');
+    say('  Install it globally so the hook can find it:  npm install -g @raytrace-cli/cli');
   }
 
   // A proxy this CLI started is restarted so the new settings apply.
@@ -160,40 +160,82 @@ export async function keyCommand(which, flags) {
 export async function doctor() {
   let problems = 0;
   const line = (ok, label, detail) => { if (ok === false) problems += 1; say(`${ok === false ? '✗' : ok === null ? '·' : '✓'} ${label.padEnd(22)} ${detail}`); };
-  const config = readConfig();
+  let config;
+  try { config = readConfig(); } catch (err) { config = {}; line(false, 'settings', `malformed config: ${err.message}`); }
   const port = portOf(config);
 
   line(true, 'node', process.version);
   if (!existsSync(paths.config)) line(false, 'settings', `missing; run \`raytrace setup\``);
   else {
-    const mode = statSync(paths.config).mode & 0o777;
-    line(process.platform === 'win32' || (mode & 0o077) === 0, 'settings', `${paths.config}${(mode & 0o077) && process.platform !== 'win32' ? ` is readable by others (chmod 600 it)` : ''}`);
+    try {
+      const mode = statSync(paths.config).mode & 0o777;
+      line(process.platform === 'win32' || (mode & 0o077) === 0, 'settings', `${paths.config}${(mode & 0o077) && process.platform !== 'win32' ? ` is readable by others (chmod 600 it)` : ''}`);
+    } catch (err) {
+      line(false, 'settings', `cannot inspect ${paths.config}: ${err.message}`);
+    }
   }
   line(existsSync(paths.dashboard) ? true : false, 'dashboard', existsSync(paths.dashboard) ? 'built' : `missing from ${paths.dashboard}; reinstall`);
-  line(onPath('raytrace') ? true : false, 'raytrace on PATH', onPath('raytrace') ? 'yes' : 'no: Claude Code\'s hook cannot run it (npm install -g @raytrace/cli)');
+  line(onPath('raytrace') ? true : false, 'raytrace on PATH', onPath('raytrace') ? 'yes' : 'no: Claude Code\'s hook cannot run it (npm install -g @raytrace-cli/cli)');
 
-  const hooks = hookState();
-  line(hooks.installed ? true : null, 'claude code hook', hooks.installed ? `installed in ${hooks.file}` : 'not installed (raytrace setup)');
-  if (hooks.repoHook) line(null, 'repo hook', 'the RayTrace repo\'s hook is also installed; sessions are reported twice');
+  try {
+    const hooks = hookState();
+    if (!hooks.installed) {
+      line(null, 'claude code hook', `not installed (${hooks.file}); run \`raytrace setup\``);
+    } else if (!hooks.valid) {
+      const issues = [];
+      if (hooks.missingEvents.length) issues.push(`missing: ${hooks.missingEvents.join(', ')}`);
+      if (hooks.invalidType) issues.push('invalid hook type (expected command)');
+      if (hooks.invalidMatcher) issues.push('restricted PostToolUse matcher (must be *)');
+      if (hooks.duplicates) issues.push('duplicate hooks detected');
+      line(false, 'claude code hook', `misconfigured in ${hooks.file} (${issues.join('; ')}); run \`raytrace setup\``);
+    } else {
+      line(true, 'claude code hook', `installed and valid in ${hooks.file}`);
+    }
+    if (hooks.repoHook) line(null, 'repo hook', 'the RayTrace repo\'s hook is also installed; sessions are reported twice');
+  } catch (error) {
+    line(false, 'claude code hook', `cannot read settings: ${error.message}`);
+  }
 
   line(config.OPENROUTER_API_KEY ? true : null, 'openrouter', config.OPENROUTER_API_KEY ? 'key set: AI features on' : 'no key: AI features off (raytrace key openrouter)');
 
-  const pid = runningPid();
-  if (await healthy(port)) line(true, 'proxy', `running on :${port}${pid ? ` (pid ${pid})` : ' (started outside this CLI)'}`);
-  else if (await portInUse(port)) line(false, 'proxy', `port ${port} is held by something that is not RayTrace`);
-  else line(null, 'proxy', `stopped (port ${port} free)`);
+  const pid = checkRunningPid();
+  try {
+    if (await healthy(port)) line(true, 'proxy', `running on :${port}${pid ? ` (pid ${pid})` : ' (started outside this CLI)'}`);
+    else if (await portInUse(port)) line(false, 'proxy', `port ${port} is held by something that is not RayTrace`);
+    else line(null, 'proxy', `stopped (port ${port} free)`);
+  } catch (err) {
+    line(false, 'proxy', `connectivity check failed: ${err.message}`);
+  }
+
+  const bridgePort = Number(process.env.RAYTRACE_BRIDGE_PORT || 8799);
+  try {
+    const res = await fetch(`http://127.0.0.1:${bridgePort}/raytace/identity`, { signal: AbortSignal.timeout(1000) });
+    if (res.ok) {
+      const info = await res.json();
+      line(true, 'sandbox bridge', `listening on :${bridgePort} (${info.service} v${info.version})`);
+    } else {
+      line(false, 'sandbox bridge', `port ${bridgePort} returned HTTP ${res.status}`);
+    }
+  } catch {
+    line(null, 'sandbox bridge', `not responding on :${bridgePort} (starts with proxy)`);
+  }
+
   line(existsSync(paths.database) ? true : null, 'database', existsSync(paths.database) ? `${paths.database} (${(statSync(paths.database).size / 1e6).toFixed(1)} MB)` : 'not created yet; it is made on first start');
 
   // Local sandboxes are optional: what they lack is shown, not counted as a problem.
   say('\nLocal sandboxes (raytrace sandbox create --local):');
-  const { checks } = await import('./lima.mjs');
-  const { vmStatus } = await import('./local-sandbox.mjs');
-  let vm = null;
-  try { vm = vmStatus(); } catch { /* no Lima yet */ }
-  const rows = await checks({ vmRunning: vm === 'Running' });
-  for (const { ok, label, detail, fix } of rows) say(`${ok === false ? '✗' : ok === null ? '·' : '✓'} ${label.padEnd(22)} ${detail}${fix ? `\n  ${''.padEnd(22)} fix: ${fix}` : ''}`);
-  if (vm) say(`· ${'vm'.padEnd(22)} raytrace: ${vm.toLowerCase()}`);
-  else if (rows.every((row) => row.ok !== false)) say(`· ${'vm'.padEnd(22)} not created yet; the first local sandbox makes it`);
+  try {
+    const { checks } = await import('./lima.mjs');
+    const { vmStatus, inVm } = await import('./local-sandbox.mjs');
+    let vm = null;
+    try { vm = vmStatus(); } catch { /* no Lima yet */ }
+    const rows = await checks({ vmRunning: vm === 'Running', runInVm: inVm });
+    for (const { ok, label, detail, fix } of rows) say(`${ok === false ? '✗' : ok === null ? '·' : '✓'} ${label.padEnd(22)} ${detail}${fix ? `\n  ${''.padEnd(22)} fix: ${fix}` : ''}`);
+    if (vm) say(`· ${'vm'.padEnd(22)} raytrace: ${vm.toLowerCase()}`);
+    else if (rows.every((row) => row.ok !== false)) say(`· ${'vm'.padEnd(22)} not created yet; the first local sandbox makes it`);
+  } catch (err) {
+    say(`· ${'vm checks'.padEnd(22)} skipped (${err.message})`);
+  }
 
   say(problems ? `\n${problems} problem${problems === 1 ? '' : 's'} found.` : '\nNo problems found.');
   if (problems) process.exitCode = 1;
@@ -237,5 +279,5 @@ export async function uninstall(flags) {
     }
     else say(`Kept ${paths.home}.`);
   }
-  say('To remove the command itself: npm uninstall -g @raytrace/cli');
+  say('To remove the command itself: npm uninstall -g @raytrace-cli/cli');
 }

@@ -93,7 +93,7 @@ const qemu = () => (process.arch === 'arm64' ? 'qemu-system-aarch64' : 'qemu-sys
  * {ok: true | false | null (a warning), label, detail, fix?}. Lima itself is
  * reported, not fetched: create offers the download.
  */
-export async function checks({ vmRunning = false } = {}) {
+export async function checks({ vmRunning = false, runInVm = null } = {}) {
   const rows = [];
   const row = (ok, label, detail, fix) => rows.push({ ok, label, detail, fix });
   const platform = process.platform;
@@ -131,5 +131,33 @@ export async function checks({ vmRunning = false } = {}) {
   }
   const gib = totalmem() / 1024 ** 3;
   if (gib < 8) row(null, 'memory', `${gib.toFixed(0)} GiB; the VM takes 4 GiB while it runs`);
+
+  if (vmRunning && typeof runInVm === 'function') {
+    try {
+      const docker = runInVm(['docker', 'info', '--format', '{{json .Runtimes}}'], { check: false });
+      if (docker?.status === 0) {
+        row(true, 'docker (in VM)', 'responding');
+        const hasGvisor = typeof docker.stdout === 'string' && docker.stdout.includes('raytace-gvisor');
+        row(hasGvisor ? true : false, 'raytace-gvisor', hasGvisor ? 'runtime registered' : 'runtime missing from Docker', 'run setup in VM');
+      } else {
+        row(false, 'docker (in VM)', 'not responding or daemon down', 'sudo systemctl restart docker in VM');
+      }
+
+      const runsc = runInVm(['/usr/local/bin/runsc', '--version'], { check: false });
+      row(runsc?.status === 0 ? true : false, 'runsc (in VM)', runsc?.status === 0 ? String(runsc.stdout).trim().split('\n')[0] : 'missing from /usr/local/bin/runsc');
+
+      for (const svc of ['collector', 'viewer', 'dns']) {
+        const active = runInVm(['systemctl', 'is-active', `raytace-${svc}`], { check: false });
+        const isOk = active?.status === 0 && String(active.stdout).trim() === 'active';
+        row(isOk ? true : false, `raytace-${svc}`, isOk ? 'active' : `inactive (${String(active?.stdout ?? '').trim() || 'failed'})`, `sudo systemctl restart raytace-${svc}`);
+      }
+
+      const sock = runInVm(['test', '-S', '/run/raytace/events.sock'], { check: false });
+      row(sock?.status === 0 ? true : false, 'collector socket', sock?.status === 0 ? '/run/raytace/events.sock exists' : 'missing /run/raytace/events.sock');
+    } catch (err) {
+      row(false, 'vm diagnostics', `could not inspect VM: ${err.message}`);
+    }
+  }
+
   return rows;
 }
