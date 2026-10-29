@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const home = process.env.RAYTRACE_HOME || join(homedir(), '.raytrace');
+const home = () => process.env.RAYTRACE_HOME || join(homedir(), '.raytrace');
 
 export const paths = {
   root,
@@ -14,13 +14,13 @@ export const paths = {
   codex: join(root, 'proxy', 'codex.mjs'),
   hook: join(root, 'proxy', 'claude-code-hook.mjs'),
   dashboard: join(root, 'dist', 'dashboard'),
-  home,
-  config: join(home, 'config.env'),
-  logs: join(home, 'logs'),
-  proxyLog: join(home, 'logs', 'proxy.log'),
-  run: join(home, 'run'),
-  proxyPid: join(home, 'run', 'proxy.pid'),
-  database: join(home, 'evidence.db'),
+  get home() { return home(); },
+  get config() { return join(home(), 'config.env'); },
+  get logs() { return join(home(), 'logs'); },
+  get proxyLog() { return join(home(), 'logs', 'proxy.log'); },
+  get run() { return join(home(), 'run'); },
+  get proxyPid() { return join(home(), 'run', 'proxy.pid'); },
+  get database() { return join(home(), 'evidence.db'); },
 };
 
 export const DEFAULT_PORT = 8797;

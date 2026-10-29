@@ -17,9 +17,9 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { initializeEvidenceDatabase } from './init-evidence-db.mjs';
+import { initializeEvidenceDatabase, verifyEvidenceDatabase } from './init-evidence-db.mjs';
 import { promptInfo } from './prompt-traces.mjs';
 import { TOOL_RESULT_KINDS, toolResultFacts } from './tool-metadata.mjs';
 import { reportedOutcome, observedOutcome, combineOutcomes, payloadToText, extractFilePaths, pathsFromText, commandTextOf, clipText, runSearch, topFailureSignatures } from './search.mjs';
@@ -75,19 +75,27 @@ const PROCESS_FACTS = `
     WHERE ev.process_id = p.id AND ev.event_kind = 'exec_failed' ORDER BY ev.stream_sequence DESC LIMIT 1) AS failed_errno,
   EXISTS (SELECT 1 FROM runtime_events ev WHERE ev.process_id = p.id AND ev.event_kind = 'exec_succeeded') AS exec_ok`;
 
-export function openEvidenceStore(file) {
-  mkdirSync(dirname(file), { recursive: true });
-  // Creates a fresh v2 database, or verifies an existing one; refuses
-  // anything else (an old-format database, a changed schema) untouched.
-  initializeEvidenceDatabase(file);
-  const db = new DatabaseSync(file);
-  // WAL lets the dashboard read while the proxy writes, but needs shared
-  // memory network mounts cannot provide. Fall back rather than refuse.
+export function openEvidenceStore(file, { readOnly = false } = {}) {
   let journal = 'wal';
-  try { db.exec('PRAGMA journal_mode = WAL'); db.exec('PRAGMA synchronous = NORMAL'); }
-  catch { db.exec('PRAGMA journal_mode = DELETE'); db.exec('PRAGMA synchronous = FULL'); journal = 'delete'; }
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
+  let db;
+  if (readOnly) {
+    if (!existsSync(file)) throw Error(`Database file does not exist: ${file}`);
+    verifyEvidenceDatabase(file);
+    db = new DatabaseSync(file, { readOnly: true });
+    journal = 'read-only';
+  } else {
+    mkdirSync(dirname(file), { recursive: true });
+    // Creates a fresh v2 database, or verifies an existing one; refuses
+    // anything else (an old-format database, a changed schema) untouched.
+    initializeEvidenceDatabase(file);
+    db = new DatabaseSync(file);
+    // WAL lets the dashboard read while the proxy writes, but needs shared
+    // memory network mounts cannot provide. Fall back rather than refuse.
+    try { db.exec('PRAGMA journal_mode = WAL'); db.exec('PRAGMA synchronous = NORMAL'); }
+    catch { db.exec('PRAGMA journal_mode = DELETE'); db.exec('PRAGMA synchronous = FULL'); journal = 'delete'; }
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec('PRAGMA busy_timeout = 5000');
+  }
 
   const q = (sql) => db.prepare(sql);
   const insertPayload = q('INSERT OR IGNORE INTO agent_payloads (sha, content) VALUES (?, ?)');
@@ -361,7 +369,7 @@ export function openEvidenceStore(file) {
 
   // Rebuild the capture-time row shape the dashboard and lab consume.
   const selectContextPayloads = q('SELECT payload_sha FROM agent_context_items WHERE exchange_id = ? ORDER BY position');
-  const EXCHANGE_COLUMNS = `e.*, s.external_session_id, s.started_at_ms AS session_started_ms, t.user_prompt_sha`;
+  const EXCHANGE_COLUMNS = `e.*, s.external_session_id, s.started_at_ms AS session_started_ms, t.user_prompt_sha, t.status AS turn_status`;
   function hydrate(record) {
     const payload = { ...getPayload(record.request_sha) };
     const tools = getPayload(record.tools_sha);
@@ -373,6 +381,7 @@ export function openEvidenceStore(file) {
       session_id: record.external_session_id, session_started_at: toIso(record.session_started_ms),
       // A trace is a turn: one prompt and everything the agent did for it.
       trace_id: record.turn_id, promptTitle: record.user_prompt_sha ? getPayload(record.user_prompt_sha) : null,
+      turn_status: record.turn_status ?? null,
       span_id: record.id, parent_span_id: transport.parent_span_id ?? null,
       timestamp: toIso(record.started_at_ms), completed_at: toIso(record.completed_at_ms),
       provider: record.provider, route: record.route, method: record.method,
@@ -384,11 +393,14 @@ export function openEvidenceStore(file) {
   }
   const latestSession = q(`SELECT e.session_id FROM agent_exchanges e JOIN agent_sessions s ON s.id = e.session_id
     WHERE e.turn_id IS NOT NULL AND ${ROUTES} ORDER BY s.started_at_ms DESC, e.started_at_ms DESC LIMIT 1`);
-  const turnExchanges = (scoped) => q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
+  const turnExchangesQuery = (scoped) => q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
     JOIN agent_sessions s ON s.id = e.session_id JOIN agent_turns t ON t.id = e.turn_id
     WHERE ${ROUTES} ${scoped ? 'AND e.session_id = ?' : ''} ORDER BY e.started_at_ms DESC LIMIT ?`);
-  const recentAll = turnExchanges(false);
-  const recentBySession = turnExchanges(true);
+  const recentAll = turnExchangesQuery(false);
+  const recentBySession = turnExchangesQuery(true);
+  const exchangesForTurn = q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
+    JOIN agent_sessions s ON s.id = e.session_id JOIN agent_turns t ON t.id = e.turn_id
+    WHERE ${ROUTES} AND (e.turn_id = ? OR t.id = ? OR e.id = ?) ORDER BY e.started_at_ms ASC, e.id ASC`);
   const selectExchange = q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
     JOIN agent_sessions s ON s.id = e.session_id LEFT JOIN agent_turns t ON t.id = e.turn_id WHERE e.id = ?`);
 
@@ -442,7 +454,7 @@ export function openEvidenceStore(file) {
   function findProcess(sandboxId, pid, startNs) { return selectProcess.get(sandboxId, pid, startNs); }
 
   // Fill the index for captures that predate it (or a missed hook update).
-  indexGuarded(() => backfillSearchIndex());
+  if (!readOnly) indexGuarded(() => backfillSearchIndex());
 
   return {
     db, journal, recordExchange,
@@ -453,6 +465,12 @@ export function openEvidenceStore(file) {
       const session = history ? null : latestSession.get()?.session_id ?? null;
       const rows = session ? recentBySession.all(session, limit) : recentAll.all(limit);
       return rows.map(hydrate).reverse();
+    },
+
+    /** All captured exchanges belonging to one turn (trace), ordered oldest-first. */
+    turnExchanges(turnId) {
+      if (!turnId) return [];
+      return exchangesForTurn.all(turnId, turnId, turnId).map(hydrate);
     },
 
     findExchange(exchangeId) {
@@ -614,11 +632,18 @@ export function openEvidenceStore(file) {
     },
 
     /** The snapshot taken after each of these calls (external call ids), by call id. */
-    snapshotsForCalls(callIds) {
+    snapshotsForCalls(callIds, { sessionId } = {}) {
       const list = [...new Set((callIds ?? []).filter(Boolean))];
       if (!list.length) return new Map();
-      const rows = q(`SELECT call_id, commit_sha, parent_sha, changed, taken_at_ms, changes_json FROM workspace_snapshots
-        WHERE call_id IN (${marks(list)}) ORDER BY taken_at_ms`).all(...list);
+      let sql = `SELECT call_id, commit_sha, parent_sha, changed, taken_at_ms, changes_json FROM workspace_snapshots
+        WHERE call_id IN (${marks(list)})`;
+      const params = [...list];
+      if (sessionId) {
+        sql += ' AND (session_id = ? OR agent_session_id = ?)';
+        params.push(sessionId, sessionId);
+      }
+      sql += ' ORDER BY taken_at_ms';
+      const rows = q(sql).all(...params);
       return new Map(rows.map((row) => {
         const body = fromJson(row.changes_json) ?? {};
         return [row.call_id, { commit: row.commit_sha, parent: row.parent_sha, changed: row.changed === 1, taken_at: toIso(row.taken_at_ms),
@@ -753,20 +778,38 @@ export function openEvidenceStore(file) {
       return new Map(rows.map((row) => [row.external_call_id, {
         tool_name: row.tool_name, args: getPayload(row.arguments_sha), result: getPayload(row.reported_result_sha) }]));
     },
-    toolCallResult(externalCallId) {
+    toolCallResult(externalCallId, { exchangeId, sessionId } = {}) {
       if (!externalCallId) return null;
-      const row = q(`SELECT c.reported_result_sha
+      let sql = `SELECT c.reported_result_sha
         FROM agent_tool_calls c JOIN agent_exchanges e ON e.id = c.exchange_id
-        WHERE c.external_call_id = ? AND c.reported_result_sha IS NOT NULL
-        ORDER BY e.started_at_ms DESC LIMIT 1`).get(externalCallId);
+        WHERE c.external_call_id = ? AND c.reported_result_sha IS NOT NULL`;
+      const params = [externalCallId];
+      if (exchangeId) {
+        sql += ' AND c.exchange_id = ?';
+        params.push(exchangeId);
+      } else if (sessionId) {
+        sql += ' AND (e.session_id = ? OR e.session_id IN (SELECT id FROM agent_sessions WHERE external_session_id = ?))';
+        params.push(sessionId, sessionId);
+      }
+      sql += ' ORDER BY e.started_at_ms DESC LIMIT 1';
+      const row = q(sql).get(...params);
       return row ? getPayload(row.reported_result_sha) : null;
     },
-    recordToolResult(externalCallId, resultItem) {
+    recordToolResult(externalCallId, resultItem, { exchangeId, sessionId } = {}) {
       if (!externalCallId || !resultItem) return null;
-      const call = q(`SELECT c.id FROM agent_tool_calls c
+      let sql = `SELECT c.id FROM agent_tool_calls c
         JOIN agent_exchanges e ON e.id = c.exchange_id
-        WHERE c.external_call_id = ?
-        ORDER BY e.started_at_ms DESC LIMIT 1`).get(externalCallId);
+        WHERE c.external_call_id = ?`;
+      const params = [externalCallId];
+      if (exchangeId) {
+        sql += ' AND c.exchange_id = ?';
+        params.push(exchangeId);
+      } else if (sessionId) {
+        sql += ' AND (e.session_id = ? OR e.session_id IN (SELECT id FROM agent_sessions WHERE external_session_id = ?))';
+        params.push(sessionId, sessionId);
+      }
+      sql += ' ORDER BY e.started_at_ms DESC LIMIT 1';
+      const call = q(sql).get(...params);
       if (!call) return null;
       const payloadSha = putPayload(resultItem);
       setReportedResult.run(payloadSha, call.id);

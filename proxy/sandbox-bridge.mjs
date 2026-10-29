@@ -28,6 +28,9 @@ export function startSandboxBridge({ dataDir, port, ingest }) {
 
   const server = createServer(async (req, res) => {
     const json = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.method === 'GET' && req.url === '/raytace/identity') {
+      return json(200, { service: 'raytrace-bridge', version: 1 });
+    }
     if (req.method !== 'POST' || req.url !== '/raytace/ingest/claude-code') return json(404, { error: 'Unknown endpoint.' });
     const sandbox = await sandboxFor(req.headers['x-raytace-sandbox-token']);
     if (!sandbox) return json(403, { error: 'Unknown sandbox token.' });

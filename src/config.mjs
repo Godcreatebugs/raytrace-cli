@@ -11,19 +11,28 @@ export function readConfig() {
 }
 
 export function writeConfig(values) {
-  mkdirSync(paths.home, { recursive: true });
-  const lines = Object.entries(values)
+  const entries = Object.entries(values)
     .filter(([, value]) => value !== undefined && value !== '')
-    .map(([key, value]) => `${key}=${quote(String(value))}`);
-  writeFileSync(paths.config, `# RayTrace settings. Restart with \`raytrace stop && raytrace start\` after editing.\n${lines.join('\n')}\n`, { mode: 0o600 });
+    .map(([key, value]) => [key, String(value)]);
+  const lines = entries.map(([key, value]) => `${key}=${quote(value)}`);
+  const text = `# RayTrace settings. Restart with \`raytrace stop && raytrace start\` after editing.\n${lines.join('\n')}\n`;
+  const parsed = parseEnv(text);
+  // Validate before touching the existing settings. dotenv has no general
+  // quote-escaping syntax, so some values cannot be represented losslessly.
+  for (const [key, value] of entries) {
+    if (parsed[key] !== value) throw new Error(`Cannot save setting ${key} without changing its value.`);
+  }
+  mkdirSync(paths.home, { recursive: true });
+  writeFileSync(paths.config, text, { mode: 0o600 });
   chmodSync(paths.config, 0o600); // the mode above only applies when the file is new
 }
 
-// Single quotes are taken literally by parseEnv, so JSON values (a custom
-// RAYTACE_OPENROUTER_MODELS) survive a round trip; double quotes otherwise.
+// Choose a delimiter absent from the value. Backslash does not escape a
+// delimiter in parseEnv; double quotes also expand literal backslash-n.
 function quote(value) {
   if (!/[\s#"'`]/.test(value)) return value;
-  return value.includes("'") ? `"${value}"` : `'${value}'`;
+  const delimiter = ["'", '`', '"'].find((candidate) => !value.includes(candidate));
+  return delimiter ? `${delimiter}${value}${delimiter}` : value;
 }
 
 export const portOf = (config) => Number(config.RAYTACE_PORT || DEFAULT_PORT);
