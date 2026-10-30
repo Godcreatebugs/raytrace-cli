@@ -3,12 +3,19 @@
  * local proxy (raytace-proxy.mjs) and RayTrace's hosted evidence service.
  */
 
+// A count is not a credential: usage reports token counts (input_tokens,
+// output_tokens_details) under names that look like tokens.
+const isCount = (value) => value === null || typeof value === 'number'
+  || (typeof value === 'object' && Object.values(value).every(isCount));
+const isCredential = (key, value) => /authorization|api[-_]?key|secret|password/i.test(key)
+  || (/token/i.test(key) && !isCount(value));
+
 /** The value with every credential-looking field replaced, at any depth. */
 export function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    /authorization|api[-_]?key|token|secret|password/i.test(key) ? [key, '[REDACTED]'] : [key, redact(item)],
+    isCredential(key, item) ? [key, '[REDACTED]'] : [key, redact(item)],
   ));
 }
 

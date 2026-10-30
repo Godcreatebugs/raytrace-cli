@@ -78,8 +78,7 @@ export function sandboxStats(plain, sandboxId) {
         MIN(e.started_at_ms) AS first, MAX(e.started_at_ms) AS last
       FROM agent_sessions s LEFT JOIN agent_exchanges e ON e.session_id = s.id
       WHERE s.external_session_id = ?`).get(sandboxId);
-    const redacted = db.prepare("SELECT COUNT(*) AS n FROM agent_payloads WHERE content LIKE '%[REDACTED]%'").get().n;
-    return { exchanges: row.exchanges ?? 0, turns: row.turns ?? 0, first: row.first ?? null, last: row.last ?? null, redacted };
+    return { exchanges: row.exchanges ?? 0, turns: row.turns ?? 0, first: row.first ?? null, last: row.last ?? null };
   } finally { db.close(); }
 }
 
@@ -175,7 +174,7 @@ export async function uploadLogs({ sandbox: ref = null, yes = false, dryRun = fa
     const day = (ms) => new Date(ms).toISOString().slice(0, 10);
     say(`Sandbox ${box.name} (${box.id}): ${stats.turns} prompt${stats.turns === 1 ? '' : 's'}, ${stats.exchanges} model exchanges${stats.first ? `, ${day(stats.first)} to ${day(stats.last)}` : ''}.`);
     say(`Evidences to upload: ${mb(size)} gzipped, this sandbox only. They will be readable at https://app.raytracer.si/?view=sandboxes`);
-    say(`${stats.redacted} recorded item${stats.redacted === 1 ? ' has' : 's have'} credential-shaped fields withheld. That covers named fields only: prompts and tool output can still contain secrets, with no guarantee.`);
+    say('Credential-shaped fields are withheld when recorded. That covers named fields only: prompts and tool output can still contain secrets, with no guarantee.');
     if (dryRun) { say('Dry run: nothing uploaded.'); return; }
     if (!yes) {
       if (!interactive()) throw new Error('Pass --yes to upload without a prompt.');
