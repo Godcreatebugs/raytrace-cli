@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig, writeConfig } from './config.mjs';
-import { checkRunningPid, healthy, portInUse, runningPid, start, status, stop } from './proxy-process.mjs';
+import { checkRunningPid, dashboardLink, healthy, portInUse, PROXY_API, proxyApi, runningPid, start, status, stop } from './proxy-process.mjs';
 import { HOOK_COMMAND, hookState, setHook } from './claude-code.mjs';
 import { askSecret, confirm, interactive } from './prompt.mjs';
 
@@ -80,7 +80,8 @@ export async function startCommand({ open = false } = {}) {
     : result.started ? `RayTrace is running: ${url}` : `RayTrace was already running: ${url}`);
   if (!result.started && !result.pid) say('  (started outside this CLI, e.g. from the RayTrace repo; `raytrace stop` will not stop it)');
   say(`  Logs: ${paths.proxyLog}`);
-  if (open) openUrl(url);
+  if (open) openUrl(await dashboardLink(result.port));
+  else say('  Open the dashboard with: raytrace open');
 }
 
 export async function stopCommand() {
@@ -101,7 +102,8 @@ export async function statusCommand() {
 export async function openCommand() {
   const state = await status();
   if (!state.healthy) { say('RayTrace is not running. Start it with `raytrace start`.'); process.exitCode = 1; return; }
-  openUrl(state.url);
+  if (state.pid && await proxyApi(state.port) < PROXY_API) await start();
+  openUrl(await dashboardLink(state.port));
   say(`Opening ${state.url}`);
 }
 

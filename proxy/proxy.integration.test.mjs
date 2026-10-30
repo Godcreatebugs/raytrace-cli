@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { readToken } from './local-token.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,7 +28,7 @@ for (const mode of ['native', 'openrouter']) test(`${mode}: HTTP capture → asy
   upstream.listen(0,'127.0.0.1'); await once(upstream,'listening');
   t.after(()=>{upstream.closeAllConnections();upstream.close();});
   async function launch() {
-    const child = spawn(process.execPath,['--disable-warning=ExperimentalWarning','proxy/raytace-proxy.mjs'],{env:{...process.env,RAYTACE_PORT:'0',RAYTACE_PROVIDER:mode,OPENROUTER_API_KEY:'router-secret',RAYTACE_OPENROUTER_MODEL:'coder',RAYTACE_OPENROUTER_UPSTREAM:`http://127.0.0.1:${upstream.address().port}/api`,RAYTACE_STORE:join(directory,'events.jsonl'),RAYTACE_OPENAI_UPSTREAM:`http://127.0.0.1:${upstream.address().port}`},stdio:['ignore','pipe','pipe']});
+    const child = spawn(process.execPath,['--disable-warning=ExperimentalWarning','proxy/raytace-proxy.mjs'],{env:{...process.env,RAYTACE_PORT:'0',RAYTACE_PROVIDER:mode,OPENROUTER_API_KEY:'router-secret',RAYTACE_OPENROUTER_MODEL:'coder',RAYTACE_OPENROUTER_UPSTREAM:`http://127.0.0.1:${upstream.address().port}/api`,RAYTACE_DATA_DIR:directory,RAYTACE_STORE:join(directory,'events.jsonl'),RAYTACE_OPENAI_UPSTREAM:`http://127.0.0.1:${upstream.address().port}`},stdio:['ignore','pipe','pipe']});
     const exited = once(child,'exit');
     t.after(async()=>{ if(child.exitCode===null)child.kill('SIGTERM'); await exited; });
     const url = await new Promise((resolve,reject)=>{
@@ -38,13 +39,36 @@ for (const mode of ['native', 'openrouter']) test(`${mode}: HTTP capture → asy
     return {child,exited,url};
   }
   const first = await launch();
+  const token = readToken(directory);
+  const fetch = (address,init={}) => globalThis.fetch(address,{...init,headers:{authorization:`Bearer ${token}`,...init.headers}});
+  // Nothing recorded, and no key, without the token or the session it signs in.
+  const outsider = {host:'127.0.0.1',authorization:''};
+  for (const path of ['/raytace/traces','/raytace/traces?scope=history','/raytace/prompt-context/x','/raytace/runtime?sandbox=x','/raytace/snapshots/rtp-00000000000000000000000000000000/files?commit=x','/raytace/models']) {
+    assert.equal((await fetch(`${first.url}${path}`,{headers:outsider})).status,401,path);
+  }
+  assert.equal((await fetch(`${first.url}/raytace/version`,{headers:outsider})).status,200);
+  assert.equal((await stat(join(directory,'api-token'))).mode & 0o777,0o600);
+  assert.equal((await stat(directory)).mode & 0o777,0o700);
+  const {ticket} = await (await fetch(`${first.url}/raytace/session`,{method:'POST'})).json();
+  const signIn = await globalThis.fetch(`${first.url}/raytace/session?ticket=${ticket}`,{redirect:'manual'});
+  assert.equal(signIn.status,302);
+  const cookie = signIn.headers.get('set-cookie').split(';')[0];
+  assert.match(signIn.headers.get('set-cookie'),/HttpOnly; SameSite=Strict/);
+  assert.equal(cookie.includes(token),false);
+  assert.equal((await globalThis.fetch(`${first.url}/raytace/session?ticket=${ticket}`,{redirect:'manual'})).status,403);
+  assert.equal((await globalThis.fetch(`${first.url}/raytace/traces`,{headers:{cookie}})).status,200);
+  assert.equal((await globalThis.fetch(`${first.url}/raytace/traces`,{headers:{cookie,origin:'http://localhost:3000'}})).status,401);
+  if (mode==='openrouter') for (const headers of [{cookie},{authorization:'Bearer wrong'}]) {
+    assert.equal((await globalThis.fetch(`${first.url}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',...headers},body:'{"model":"coder","input":[]}'})).status,401);
+    assert.equal(received.length,0);
+  }
   const headers = {'content-type':'application/json','x-raytace-experiment':'1',origin:'http://localhost:3000'};
   let res = await fetch(`${first.url}/raytace/experiments`,{method:'POST',headers:{...headers,origin:'https://untrusted.example'},body:'{}'});
   assert.equal(res.status,403);
   res = await fetch(`${first.url}/raytace/experiments`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   assert.equal(res.status,403); assert.equal(received.length,0);
   const payload = {model:'fixture-model',stream:true,reasoning:{effort:'medium'},tools:[{type:'function',name:'read_file'}],input:[{type:'message',role:'user',content:'Search result: auth.ts'},{type:'message',role:'user',content:'Fix login'}]};
-  res = await fetch(`${first.url}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer fixture-secret'},body:JSON.stringify(payload)});
+  res = await fetch(`${first.url}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',...(mode==='native'?{authorization:'Bearer fixture-secret'}:{})},body:JSON.stringify(payload)});
   assert.equal(res.status,200); assert.match(await res.text(),/response.completed/);
   const traces = await fetch(`${first.url}/raytace/traces`).then((r)=>r.json());
   const trace = traces.traces[0]; const snapshot = JSON.parse(trace.events[0].raw);
@@ -80,7 +104,7 @@ for (const mode of ['native', 'openrouter']) test(`${mode}: HTTP capture → asy
   assert.equal(history.experiments[0].status,'completed');
   res=await fetch(`${second.url}/raytace/experiments`,{method:'POST',headers,body:JSON.stringify(config)});
   assert.equal(res.status,409); assert.equal(received.length,5);
-  await fetch(`${second.url}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer fixture-secret'},body:JSON.stringify(payload)});
+  await fetch(`${second.url}/v1/responses`,{method:'POST',headers:{'content-type':'application/json',...(mode==='native'?{authorization:'Bearer fixture-secret'}:{})},body:JSON.stringify(payload)});
   const fresh = await fetch(`${second.url}/raytace/traces`).then(r=>r.json());
   assert.equal(fresh.traces.length,1);
   const allRuns = await fetch(`${second.url}/raytace/traces?scope=history`).then(r=>r.json());

@@ -8,6 +8,7 @@ import { checkRunningPid, runningPid } from '../src/proxy-process.mjs';
 import { paths } from '../src/paths.mjs';
 import { startSandboxBridge } from '../proxy/sandbox-bridge.mjs';
 import { doctor } from '../src/commands.mjs';
+import { sandboxReach } from '../src/lima.mjs';
 
 const tempDir = mkdtempSync(join(tmpdir(), 'raytrace-doctor-test-'));
 const oldHome = process.env.RAYTRACE_HOME;
@@ -17,6 +18,14 @@ after(() => {
   rmSync(tempDir, { recursive: true, force: true });
   if (oldHome) process.env.RAYTRACE_HOME = oldHome;
   else delete process.env.RAYTRACE_HOME;
+});
+
+test('a sandbox firewall that lets anything but the bridge through is reported', () => {
+  const bridge = '-A DOCKER-USER -d 192.168.5.2/32 -i br-raytace -p tcp -m tcp --dport 8799 -j ACCEPT';
+  const reject = '-A DOCKER-USER -d 192.168.0.0/16 -i br-raytace -j REJECT --reject-with icmp-port-unreachable';
+  assert.deepEqual(sandboxReach(['-N DOCKER-USER', bridge, reject].join('\n')), []);
+  assert.deepEqual(sandboxReach([bridge.replace('8799', '8797'), bridge, reject].join('\n')), ['8797']);
+  assert.deepEqual(sandboxReach(bridge), ['every local port']);
 });
 
 test('checkRunningPid does not delete stale PID file unlike runningPid', () => {
