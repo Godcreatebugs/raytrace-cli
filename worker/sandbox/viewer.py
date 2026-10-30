@@ -1,10 +1,26 @@
-"""Loopback-only, read-only evidence viewer, forwarded by Lima to the Mac."""
+"""Loopback-only, read-only evidence viewer, forwarded by Lima to the Mac.
+
+A forwarded port is open to every account on the Mac, so each request carries
+the token the CLI writes here (src/local-sandbox.mjs). No token, no evidence.
+"""
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import sqlite3
 import time
 from urllib.parse import urlparse, parse_qs
+
+TOKEN = Path('/etc/raytace/viewer-token')
+
+
+def allowed(header):
+    try:
+        token = TOKEN.read_text().strip()
+    except OSError:
+        return False
+    return bool(token) and hmac.compare_digest(header.encode(), f'Bearer {token}'.encode())
+
 
 def event_page(db, query):
     container = query.get('container', [''])[0]
@@ -74,7 +90,7 @@ PAGE = '''<!doctype html><meta charset="utf-8"><title>RayTrace runtime evidence<
 <table><thead><tr><th>Event</th><th>PID / parent</th><th>Executable / arguments / result</th></tr></thead><tbody id="events"></tbody></table>
 <script>
 const select=document.getElementById('jobs');
-async function refresh(){try{const response=await fetch('/events');if(!response.ok)throw Error('Collector unavailable');const data=await response.json();
+async function refresh(){try{const response=await fetch('events');if(!response.ok)throw Error('Collector unavailable');const data=await response.json();
 const chosen=select.value;select.replaceChildren(new Option('All sandboxes and collector health',''));for(const id of data.containers)select.add(new Option(id.slice(0,16),id));select.value=chosen;
 const rows=data.events.filter(e=>!select.value||e.container_id===select.value);
 document.getElementById('status').textContent='Latest '+rows.length+' events (up to 500). '+data.gaps+' recorded collection errors/gaps.';
@@ -88,6 +104,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('Host', '').split(':')[0] not in ('localhost', '127.0.0.1'):
             self.send_error(403)
+            return
+        if not allowed(self.headers.get('Authorization', '')):
+            self.send_error(401)
             return
         if self.path == '/':
             body, mime = PAGE.encode(), 'text/html; charset=utf-8'

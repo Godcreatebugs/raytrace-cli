@@ -25,7 +25,7 @@ configureApi({ fetch: (path, init) => fetch(path, init) });
 
 // The page is read from disk, so after an upgrade an older proxy still running
 // serves it, and answers its new sections "Unknown local endpoint". Say why.
-const PROXY_API = 3;
+const PROXY_API = 4;
 function ProxyNotice() {
   const [outdated, setOutdated] = useState(false);
   const [signedOut, setSignedOut] = useState(false);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasSession, hasToken, sessionCookie, sessionFor, trustedRequest } from './request-policy.mjs';
+import { hasSession, hasToken, sessionCookie, sessionFor, trustedRequest, viewerTokenFor } from './request-policy.mjs';
 
 const request = (url, headers) => ({method: 'POST', url, headers: {host: '127.0.0.1:8797', ...headers}});
 test('simple browser POSTs from untrusted origins are refused on provider and dashboard routes', () => {
@@ -39,4 +39,9 @@ test('the dashboard cookie counts only from the dashboard\'s own origin', () => 
   assert.equal(seen({cookie: `${sessionCookie(8797)}=right`}), false);
   assert.equal(seen({}), false);
   assert.equal(hasSession({headers: {host: '127.0.0.1:18797', cookie}}, 'right', 18797), false);
+});
+test('the VM\'s viewer token is neither the API token nor the dashboard session', () => {
+  assert.notEqual(viewerTokenFor('right'), 'right');
+  assert.notEqual(viewerTokenFor('right'), sessionFor('right'));
+  assert.equal(hasToken({headers: {authorization: `Bearer ${viewerTokenFor('right')}`}}, 'right'), false);
 });

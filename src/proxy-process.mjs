@@ -13,7 +13,7 @@ import { readToken } from '../proxy/local-token.mjs';
 
 // The proxy API this CLI's dashboard needs (proxy/raytace-proxy.mjs PROXY_API).
 // A proxy from an older install answers without it, or with less.
-export const PROXY_API = 3;
+export const PROXY_API = 4;
 
 /** The running proxy's API version: 0 for one from before it said. */
 export async function proxyApi(port) {

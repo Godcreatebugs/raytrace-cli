@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { requestMetrics } from './request-metrics.mjs';
 import { redact, parseSseResponse } from './capture.mjs';
-import { trustedOrigin as originAllowed, trustedRequest, hasToken, hasSession, sessionFor, sessionCookie } from './request-policy.mjs';
+import { trustedOrigin as originAllowed, trustedRequest, hasToken, hasSession, sessionFor, sessionCookie, viewerTokenFor } from './request-policy.mjs';
 import { ensureToken } from './local-token.mjs';
 /** Local API recorder. Point a compatible client at http://127.0.0.1:8797. */
 import { createServer } from 'node:http';
@@ -43,7 +43,7 @@ const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
   : (routing.models.oss || routing.defaultModel);
 // Bumped whenever the dashboard needs endpoints an older proxy lacks; the
 // CLI restarts a proxy it started that reports less (src/proxy-process.mjs).
-const PROXY_API = 3;
+const PROXY_API = 4;
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
@@ -60,6 +60,7 @@ const TICKET_MS = 2 * 60 * 1000;
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
 const tickets = new Set();
 const NOT_SIGNED_IN = { error: 'Not signed in to this RayTrace. Run: raytrace open', code: 'not_signed_in' };
+const fromViewer = (url, init = {}) => fetch(url, { ...init, headers: { authorization: `Bearer ${viewerTokenFor(apiToken)}` } });
 // The local sandboxes (raytrace sandbox create --local): in place of raytace's sandbox manager.
 const sandboxes = localSandboxes({ dataDir });
 const NO_VM = `Local sandbox VM (${VM}) not reachable. Start a sandbox with: raytrace sandbox start <name>`;
@@ -464,6 +465,17 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url.startsWith('/raytace/alerts')) return json(200, { alerts: [] });
     return json(404, { error: 'Not available for local sandboxes yet. Destroy one with: raytrace sandbox destroy <name>' });
   }
+  // The collector's raw feed, behind this API's sign-in (worker/sandbox/viewer.py).
+  const feedRoute = req.url?.match(/^\/raytace\/viewer\/(events)?$/);
+  if (req.method === 'GET' && feedRoute) {
+    try {
+      const feed = await fromViewer(`${EVIDENCE_VIEWER}/${feedRoute[1] ?? ''}`, { signal: AbortSignal.timeout(10000) });
+      if (!feed.ok) throw new Error('Runtime collector unavailable');
+      if (feedRoute[1]) return json(200, await feed.json());
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      return res.end(await feed.text());
+    } catch { return json(503, { error: NO_VM }); }
+  }
   if (req.method === 'GET' && req.url?.startsWith('/raytace/runtime?')) {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const sandbox = query.get('sandbox');
@@ -483,7 +495,7 @@ const server = createServer(async (req, res) => {
       // A windowed page wants everything in the window, not the newest 100:
       // folding turns hundreds of raw events into a handful of commands.
       const limit = since !== '0' || until !== '0' ? 500 : 100;
-      const evidence = await fetch(`${EVIDENCE_VIEWER}/events?container=${project.container_id}&before=${before}${window}&limit=${limit}&processes=1`, { signal: AbortSignal.timeout(10000) });
+      const evidence = await fromViewer(`${EVIDENCE_VIEWER}/events?container=${project.container_id}&before=${before}${window}&limit=${limit}&processes=1`, { signal: AbortSignal.timeout(10000) });
       if (!evidence.ok) throw new Error('Runtime collector unavailable');
       const page = await evidence.json();
       const base = { ...page, sandbox, container_id: project.container_id };
@@ -895,6 +907,7 @@ server.listen(port, '127.0.0.1', () => {
 const gvisorForwarder = process.env.RAYTACE_GVISOR_FORWARDER === '0' ? null : startGvisorForwarder({
   listProjects: () => sandboxes.list(),
   viewerBase: EVIDENCE_VIEWER,
+  fetchImpl: fromViewer,
   ingest: (events, { sessionId }) => ingestExecutions(db, events, { sessionId }),
   // Exits, found by the process's own identity (pid + start time), so an
   // exit closes its process even after a proxy restart or for a process the

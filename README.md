@@ -105,7 +105,8 @@ raytrace sandbox destroy my-box                 # asks whether to delete its log
   (`raytrace open`): **Sandboxes** lists each sandbox with its prompts, and
   **Sandbox evidence** shows, for one prompt, every command that actually ran,
   its exit code and what it reached on the network, each joined to the tool
-  call that ran it. The raw collector feed is at http://localhost:8798.
+  call that ran it. The raw collector feed is at `/raytace/viewer/` on the
+  dashboard's address.
   Nothing leaves your machine.
 - **Changes:** the sandbox's Claude Code hook snapshots the project after
   every edit, so **Changes** shows what each prompt left different, file by
