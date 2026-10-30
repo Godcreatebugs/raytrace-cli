@@ -258,6 +258,13 @@ export async function destroy(ref, flags, { ask, interactive }) {
     say(`This deletes local sandbox ${box.name}: its files, and any sign-in made inside it.`);
     if ((await ask('Type the sandbox name to confirm: ')) !== box.name) { say('Not destroyed.'); return; }
   }
+  // A destroyed sandbox can no longer be uploaded, so this is the last chance:
+  // asked once, default no, and a failed upload leaves the sandbox in place.
+  if (!flags.yes && interactive()
+    && /^y(es)?$/i.test((await ask('Upload its evidences to RayTrace cloud first? (yes/no) [no]: ')).trim())) {
+    const { uploadLogs } = await import('./upload.mjs');
+    await uploadLogs({ sandbox: id, yes: true });
+  }
   let deleteLogs = flags['delete-logs'] ? true : flags['keep-logs'] ? false : null;
   if (deleteLogs === null) {
     deleteLogs = interactive()

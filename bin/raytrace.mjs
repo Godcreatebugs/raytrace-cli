@@ -20,7 +20,8 @@ Cloud sandboxes:
                                             optional (same as: raytrace sandbox shell [id])
   raytrace sandbox list
   raytrace sandbox start|stop [id]
-  raytrace sandbox destroy [id] [--yes]     delete it; recorded evidence is kept
+  raytrace sandbox destroy [id] [--yes] [--keep-traces]
+                                            delete it; traces go too unless --keep-traces (paid plans)
 
 Local sandboxes (your project stays on this machine):
   raytrace sandbox create --local [--name <name>] [--yes]
@@ -35,6 +36,12 @@ Local sandboxes (your project stays on this machine):
                                             kept logs move to ~/.raytrace/archive
   Recorded commands, files and connections: http://localhost:8798.
   macOS and Linux; Windows is experimental. raytrace doctor shows what is missing.
+
+Upload local evidences to RayTrace cloud (needs sign-in):
+  raytrace upload logs [--sandbox <name>] [--dry-run] [--yes]
+                                            gzip and upload a local sandbox's evidences;
+                                            they appear at https://app.raytracer.si
+  raytrace upload status                    your plan's evidences storage
 
 Export recorded traces:
   raytrace export <trace-id>                view trace details in terminal as Markdown
@@ -115,6 +122,7 @@ if (command === 'sandbox') {
       local: { type: 'boolean' },
       'delete-logs': { type: 'boolean' },
       'keep-logs': { type: 'boolean' },
+      'keep-traces': { type: 'boolean' },
     } });
   } catch (error) { console.error(`${error.message}\n\nRun \`raytrace help\` for usage.`); process.exit(2); }
   const [sub, id] = parsed.positionals;
@@ -129,6 +137,28 @@ if (command === 'sandbox') {
   if (!action) { console.error(`Unknown sandbox command: ${sub ?? '(none)'}\n\n${HELP}`); process.exit(2); }
   try { await action(); process.exit(0); }
   catch (error) { console.error(`raytrace sandbox ${sub}: ${error.message}`); process.exit(1); }
+}
+
+if (command === 'upload') {
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
+      yes: { type: 'boolean', short: 'y' },
+      sandbox: { type: 'string' },
+      'dry-run': { type: 'boolean' },
+    } });
+  } catch (error) { console.error(`${error.message}\n\nUsage: raytrace upload logs [--sandbox <name>] [--dry-run] [--yes] | raytrace upload status`); process.exit(2); }
+  const [sub, ...extra] = parsed.positionals;
+  if (extra.length || (sub !== 'logs' && sub !== 'status')) {
+    console.error('Usage: raytrace upload logs [--sandbox <name>] [--dry-run] [--yes] | raytrace upload status');
+    process.exit(2);
+  }
+  const upload = await import('../src/upload.mjs');
+  try {
+    if (sub === 'status') await upload.uploadStatus();
+    else await upload.uploadLogs({ sandbox: parsed.values.sandbox, yes: parsed.values.yes, dryRun: parsed.values['dry-run'] });
+    process.exit(0);
+  } catch (error) { console.error(`raytrace upload ${sub}: ${error.message}`); process.exit(1); }
 }
 
 if (command === 'export') {
