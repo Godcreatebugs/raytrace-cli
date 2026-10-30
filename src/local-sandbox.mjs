@@ -3,7 +3,7 @@
 // Your project never leaves the machine. The VM runs each sandbox as a Docker
 // container under gVisor; the collector beside it (worker/sandbox) records the
 // commands, files and connections it makes, independently of the agent, and the
-// evidence viewer shows them on http://localhost:8798. The sandbox's Claude Code
+// dashboard shows them, read from the evidence viewer. The sandbox's Claude Code
 // hook sends its transcript to this CLI's proxy through the sandbox bridge
 // (proxy/sandbox-bridge.mjs), so its sessions show in the local dashboard.
 //
@@ -17,6 +17,8 @@ import { basename, join } from 'node:path';
 import { paths } from './paths.mjs';
 import { portInUse, runningPid, start as startProxy, stop as stopProxy } from './proxy-process.mjs';
 import { readConfig } from './config.mjs';
+import { ensureToken } from '../proxy/local-token.mjs';
+import { viewerTokenFor } from '../proxy/request-policy.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
 
 const say = (line = '') => console.log(line);
@@ -121,7 +123,13 @@ function ensureVm() {
   }
   const version = setupVersion();
   const installed = inVm(['cat', SETUP_MARK], { check: false }).stdout?.trim();
-  if (installed === version) return;
+  if (installed !== version) installInVm(version);
+  // Through stdin: arguments are visible to every account in `ps`. Written each
+  // time, so a new token or a rebuilt VM never leaves the viewer locked.
+  inVm(['sh', '-c', 'umask 077; cat > /etc/raytace/viewer-token'], { input: `${viewerTokenFor(ensureToken(paths.home))}\n` });
+}
+
+function installInVm(version) {
   say(`Installing gVisor, the evidence collector and the sandbox image in the VM (a few minutes; progress in ${VM_LOG})...`);
   inVm(['rm', '-rf', '/tmp/raytrace-sandbox-source']);
   limactl(['shell', '--workdir', '/', VM, 'mkdir', '-p', '/tmp/raytrace-sandbox-source']);
@@ -325,7 +333,7 @@ export async function shell(id) {
   await ensureBridge();
   const { name } = registry()[id];
   say(`Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
-  say('Recorded commands, files and connections: http://localhost:8798\n');
+  say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');
   projects(['shell', id], { inherit: true, check: false });
   say(`\nLeft ${name}. It is still running. Back in: raytrace connect ${name}   Stop it: raytrace sandbox stop ${name}`);
 }

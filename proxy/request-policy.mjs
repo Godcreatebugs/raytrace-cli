@@ -23,6 +23,8 @@ const same = (a, b) => timingSafeEqual(digest(a), digest(b));
 /** What the dashboard's browser holds in place of the token itself. */
 export const sessionFor = (token) => digest(`dashboard:${token}`).toString('hex');
 export const sessionCookie = (port) => `raytrace_session_${port}`;
+/** What the sandbox VM's evidence viewer holds: one-way, so a copy in the VM opens only the viewer. */
+export const viewerTokenFor = (token) => digest(`viewer:${token}`).toString('hex');
 
 /** A client that read the token file: the CLI, the hook, `raytrace codex`. */
 export function hasToken(req, token) {

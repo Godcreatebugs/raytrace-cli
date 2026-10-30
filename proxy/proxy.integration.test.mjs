@@ -43,7 +43,7 @@ for (const mode of ['native', 'openrouter']) test(`${mode}: HTTP capture → asy
   const fetch = (address,init={}) => globalThis.fetch(address,{...init,headers:{authorization:`Bearer ${token}`,...init.headers}});
   // Nothing recorded, and no key, without the token or the session it signs in.
   const outsider = {host:'127.0.0.1',authorization:''};
-  for (const path of ['/raytace/traces','/raytace/traces?scope=history','/raytace/prompt-context/x','/raytace/runtime?sandbox=x','/raytace/snapshots/rtp-00000000000000000000000000000000/files?commit=x','/raytace/models']) {
+  for (const path of ['/raytace/traces','/raytace/traces?scope=history','/raytace/prompt-context/x','/raytace/runtime?sandbox=x','/raytace/snapshots/rtp-00000000000000000000000000000000/files?commit=x','/raytace/models','/raytace/viewer/','/raytace/viewer/events']) {
     assert.equal((await fetch(`${first.url}${path}`,{headers:outsider})).status,401,path);
   }
   assert.equal((await fetch(`${first.url}/raytace/version`,{headers:outsider})).status,200);

@@ -34,7 +34,7 @@ Local sandboxes (your project stays on this machine):
   raytrace sandbox destroy <name> [--delete-logs | --keep-logs]
                                             asks whether to delete its captured logs too;
                                             kept logs move to ~/.raytrace/archive
-  Recorded commands, files and connections: http://localhost:8798.
+  Recorded commands, files and connections: raytrace open, then Sandbox evidence.
   macOS and Linux; Windows is experimental. raytrace doctor shows what is missing.
 
 Upload local evidences to RayTrace cloud (needs sign-in):
