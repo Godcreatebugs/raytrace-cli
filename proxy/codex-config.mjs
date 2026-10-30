@@ -1,6 +1,9 @@
 import { selectModel } from './providers.mjs';
 import { randomUUID } from 'node:crypto';
 
+// Where `raytrace codex` hands Codex the local API token (codex.mjs).
+export const TOKEN_ENV = 'RAYTRACE_API_TOKEN';
+
 export function codexArgs(config, args, port = '8797') {
   if (config.mode !== 'openrouter') return args;
   const forwarded = [];
@@ -23,6 +26,8 @@ export function codexArgs(config, args, port = '8797') {
     '-c', 'model_providers.raytace_openrouter.name="OpenRouter via RayTrace"',
     '-c', 'model_providers.raytace_openrouter.wire_api="responses"',
     '-c', 'model_providers.raytace_openrouter.requires_openai_auth=false',
+    // By name, not value: arguments are visible to every account in `ps`.
+    '-c', `model_providers.raytace_openrouter.env_key="${TOKEN_ENV}"`,
     '-c', `model_providers.raytace_openrouter.http_headers={ "x-raytace-session-id" = "${randomUUID()}", "x-raytace-session-started-at" = "${new Date().toISOString()}" }`,
     '-c', `model_providers.raytace_openrouter.base_url=${JSON.stringify(`http://127.0.0.1:${port}/v1`)}`,
     ...(hasModel ? [] : ['-m', config.defaultModel]),

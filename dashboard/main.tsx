@@ -25,17 +25,20 @@ configureApi({ fetch: (path, init) => fetch(path, init) });
 
 // The page is read from disk, so after an upgrade an older proxy still running
 // serves it, and answers its new sections "Unknown local endpoint". Say why.
-const PROXY_API = 2;
-function OutdatedProxy() {
+const PROXY_API = 3;
+function ProxyNotice() {
   const [outdated, setOutdated] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
   useEffect(() => {
     fetch('/raytace/version').then((response) => (response.ok ? response.json() : { api: 0 }))
       .then((body) => setOutdated((Number(body.api) || 0) < PROXY_API), () => {});
+    fetch('/raytace/models').then((response) => setSignedOut(response.status === 401), () => {});
   }, []);
-  if (!outdated) return null;
+  if (!outdated && !signedOut) return null;
   return <div role="alert" style={{ padding: '10px 16px', background: 'light-dark(#fff4d6,#3a2f12)', color: 'light-dark(#5c4300,#ffd97a)', fontSize: 13, borderBottom: '1px solid light-dark(#f0d48a,#5c4a1c)' }}>
-    An older RayTrace proxy is running, so parts of this page cannot load. Restart it: <code>raytrace stop &amp;&amp; raytrace start</code>
+    {outdated ? <>An older RayTrace proxy is running, so parts of this page cannot load. Restart it: <code>raytrace stop &amp;&amp; raytrace start</code></>
+      : <>This browser is not signed in to RayTrace, so nothing can load. In a terminal, run: <code>raytrace open</code></>}
   </div>;
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><OutdatedProxy /><Dashboard views={VIEWS} /></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><ProxyNotice /><Dashboard views={VIEWS} /></StrictMode>);

@@ -17,7 +17,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { initializeEvidenceDatabase, verifyEvidenceDatabase } from './init-evidence-db.mjs';
 import { promptInfo } from './prompt-traces.mjs';
@@ -95,6 +95,11 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
     catch { db.exec('PRAGMA journal_mode = DELETE'); db.exec('PRAGMA synchronous = FULL'); journal = 'delete'; }
     db.exec('PRAGMA foreign_keys = ON');
     db.exec('PRAGMA busy_timeout = 5000');
+    // Prompts and tool output, for this user only. SQLite gives new -wal and
+    // -shm files the database's mode; ones made before this keep their own.
+    for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+      try { chmodSync(path, 0o600); } catch { /* not there yet, or a filesystem without modes */ }
+    }
   }
 
   const q = (sql) => db.prepare(sql);

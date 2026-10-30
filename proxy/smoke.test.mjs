@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { readToken } from './local-token.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +32,7 @@ test('smoke: capture → inspect → experiment', { timeout: 20000 }, async (t) 
     env: {
       ...process.env,
       RAYTACE_PORT: '0',
+      RAYTACE_DATA_DIR: directory,
       RAYTACE_DB: join(directory, 'evidence.db'),
       RAYTACE_PROVIDER: 'openrouter',
       OPENROUTER_API_KEY: 'smoke-secret',
@@ -50,7 +52,9 @@ test('smoke: capture → inspect → experiment', { timeout: 20000 }, async (t) 
     child.on('exit', (code) => reject(new Error(`Proxy exited before startup (${code})`)));
   });
 
-  const headers = { 'content-type': 'application/json', authorization: 'Bearer client-secret' };
+  const signedIn = { authorization: `Bearer ${readToken(directory)}` };
+  const fetch = (address, init = {}) => globalThis.fetch(address, { ...init, headers: { ...signedIn, ...init.headers } });
+  const headers = { 'content-type': 'application/json', ...signedIn };
   const captured = await fetch(`${url}/v1/responses`, {
     method: 'POST', headers,
     body: JSON.stringify({ model: 'smoke-model', stream: false, input: [{ role: 'user', content: 'Inspect the README.' }] }),

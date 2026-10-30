@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { providerConfig, routeRequest, openrouterModels } from './providers.mjs';
-import { codexArgs } from './codex-config.mjs';
+import { codexArgs, TOKEN_ENV } from './codex-config.mjs';
 
 const config = providerConfig({ RAYTACE_PROVIDER: 'openrouter', OPENROUTER_API_KEY: 'router-test' });
 const request = { method: 'POST', url: '/v1/responses', headers: { authorization: 'Bearer native-secret', 'openai-organization': 'private-org', 'x-api-key': 'private-key' } };
@@ -69,4 +69,8 @@ test('Codex launcher resolves model flags without injecting duplicate model flag
   assert.deepEqual(codexArgs(config, ['--', '--model=literal-prompt']).slice(-2), ['--', '--model=literal-prompt']);
   const nativeArgs = ['--model', 'native-model'];
   assert.deepEqual(codexArgs(providerConfig({}), nativeArgs), nativeArgs);
+});
+
+test('Codex is told where to find the local API token, never the token itself', () => {
+  assert.ok(codexArgs(config, ['exec']).includes(`model_providers.raytace_openrouter.env_key="${TOKEN_ENV}"`));
 });

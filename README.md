@@ -222,6 +222,10 @@ RayTrace's servers.
 - `raytrace auth login` keeps your sign-in in the macOS Keychain or the Linux
   secret service (a file readable only by you where neither is available), and
   `raytrace auth logout` removes it.
+- What RayTrace records locally stays in `~/.raytrace`, readable only by you.
+  Its local API takes the token in `~/.raytrace/api-token`, so another account
+  on the machine cannot read your traces or spend your OpenRouter key through
+  it. `raytrace open` signs your browser in with a one-time link.
 
 ## Uninstall
 
@@ -255,6 +259,9 @@ with a hook that points at a missing command.
 - **A local sandbox's Claude Code sessions do not show in the dashboard:**
   RayTrace's proxy may be from before local sandboxes. Restart it:
   `raytrace stop && raytrace start`. `sandbox create --local` warns about this.
+- **The dashboard says this browser is not signed in:** run `raytrace open`.
+  Each browser signs in once, for 30 days; a bookmark to the dashboard then
+  keeps working.
 - **`sandbox create --local` says the machine is not ready:** each line names
   what is missing and how to fix it; `raytrace doctor` shows the same. Port
   8798 in use usually means another Lima VM is running (`limactl list`).

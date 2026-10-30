@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { chmodSync, statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -258,7 +259,9 @@ test('reopening an existing evidence database keeps its rows; an old-format one 
   try {
     const file = join(dir, 'evidence.db');
     let store = openEvidenceStore(file); captureDemo(store); store.close();
+    chmodSync(file, 0o644); // an install from before these were closed
     store = openEvidenceStore(file); assert.equal(store.stats().exchanges, 3); store.close();
+    assert.equal(statSync(file).mode & 0o777, 0o600);
     const { DatabaseSync } = await import('node:sqlite');
     const oldFile = join(dir, 'old.db');
     const old = new DatabaseSync(oldFile); old.exec('CREATE TABLE exchanges (span_id TEXT); PRAGMA user_version = 8'); old.close();

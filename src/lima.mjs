@@ -93,6 +93,15 @@ const qemu = () => (process.arch === 'arm64' ? 'qemu-system-aarch64' : 'qemu-sys
  * {ok: true | false | null (a warning), label, detail, fix?}. Lima itself is
  * reported, not fetched: create offers the download.
  */
+/** What the VM's firewall leaves a sandbox able to reach beyond the bridge
+ * (:8799). Lima maps its host address to this machine's localhost, so these
+ * rules are all that keeps a sandbox off the proxy. */
+export function sandboxReach(rules) {
+  const lines = rules.split('\n').filter((line) => line.includes('-i br-raytace'));
+  if (!lines.some((line) => line.includes('-d 192.168.0.0/16') && line.includes('-j REJECT'))) return ['every local port'];
+  return lines.filter((line) => line.includes('-j ACCEPT') && !line.includes('--dport 8799')).map((line) => line.match(/--dport (\d+)/)?.[1] ?? 'every local port');
+}
+
 export async function checks({ vmRunning = false, runInVm = null } = {}) {
   const rows = [];
   const row = (ok, label, detail, fix) => rows.push({ ok, label, detail, fix });
@@ -154,6 +163,10 @@ export async function checks({ vmRunning = false, runInVm = null } = {}) {
 
       const sock = runInVm(['test', '-S', '/run/raytace/events.sock'], { check: false });
       row(sock?.status === 0 ? true : false, 'collector socket', sock?.status === 0 ? '/run/raytace/events.sock exists' : 'missing /run/raytace/events.sock');
+
+      const firewall = runInVm(['sudo', 'iptables', '-S', 'DOCKER-USER'], { check: false });
+      const open = firewall?.status === 0 ? sandboxReach(String(firewall.stdout)) : null;
+      row(open?.length === 0, 'sandbox firewall', !open ? 'could not read the rules' : open.length ? `sandboxes can reach ${open.join(', ')} on this machine` : 'sandboxes reach only the bridge', 'sudo python3 /opt/raytace/network.py in VM');
     } catch (err) {
       row(false, 'vm diagnostics', `could not inspect VM: ${err.message}`);
     }

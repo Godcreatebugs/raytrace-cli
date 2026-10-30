@@ -9,10 +9,11 @@ import { createConnection } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig } from './config.mjs';
+import { readToken } from '../proxy/local-token.mjs';
 
 // The proxy API this CLI's dashboard needs (proxy/raytace-proxy.mjs PROXY_API).
 // A proxy from an older install answers without it, or with less.
-export const PROXY_API = 2;
+export const PROXY_API = 3;
 
 /** The running proxy's API version: 0 for one from before it said. */
 export async function proxyApi(port) {
@@ -22,11 +23,23 @@ export async function proxyApi(port) {
   } catch { return 0; }
 }
 
+const signedIn = () => ({ authorization: `Bearer ${readToken(paths.home)}` });
+
 export async function healthy(port) {
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/raytace/models`, { signal: AbortSignal.timeout(2000) });
+    const response = await fetch(`http://127.0.0.1:${port}/raytace/models`, { headers: signedIn(), signal: AbortSignal.timeout(2000) });
     return response.ok;
   } catch { return false; }
+}
+
+/** The dashboard's address, carrying a one-time ticket that signs this browser
+ * in. A proxy from before tickets just gets its plain address. */
+export async function dashboardLink(port) {
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const response = await fetch(`${url}/raytace/session`, { method: 'POST', headers: signedIn(), signal: AbortSignal.timeout(2000) });
+    return response.ok ? `${url}/raytace/session?ticket=${(await response.json()).ticket}` : url;
+  } catch { return url; }
 }
 
 /** True when anything at all is listening on the port. */

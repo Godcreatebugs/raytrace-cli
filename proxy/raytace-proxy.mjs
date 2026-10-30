@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { requestMetrics } from './request-metrics.mjs';
 import { redact, parseSseResponse } from './capture.mjs';
-import { trustedOrigin as originAllowed, trustedRequest } from './request-policy.mjs';
+import { trustedOrigin as originAllowed, trustedRequest, hasToken, hasSession, sessionFor, sessionCookie } from './request-policy.mjs';
+import { ensureToken } from './local-token.mjs';
 /** Local API recorder. Point a compatible client at http://127.0.0.1:8797. */
 import { createServer } from 'node:http';
 import { appendFile, mkdir, readFile, stat } from 'node:fs/promises';
 import { realpathSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { join, dirname, resolve, extname, sep } from 'node:path';
 import { exchangesFromTranscript, parseTranscript, toolResultsFromTranscript } from './claude-code-adapter.mjs';
 import { replayEligibility, createExperiment, runExperiment } from './experiment-engine.mjs';
@@ -42,7 +43,7 @@ const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
   : (routing.models.oss || routing.defaultModel);
 // Bumped whenever the dashboard needs endpoints an older proxy lacks; the
 // CLI restarts a proxy it started that reports less (src/proxy-process.mjs).
-const PROXY_API = 2;
+const PROXY_API = 3;
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
@@ -52,6 +53,13 @@ const EVIDENCE_VIEWER = process.env.RAYTACE_EVIDENCE_VIEWER || 'http://127.0.0.1
 // The CLI sets RAYTACE_DATA_DIR (~/.raytrace); run by hand it keeps ./.raytace.
 const dataDir = process.env.RAYTACE_DATA_DIR || join(process.cwd(), '.raytace');
 const store = process.env.RAYTACE_STORE || join(dataDir, 'events.jsonl');
+// Who may use the local API (local-token.mjs). `raytrace open` trades it for a
+// one-time ticket, so the link it hands the browser is worth nothing afterwards.
+const apiToken = ensureToken(dataDir);
+const TICKET_MS = 2 * 60 * 1000;
+const SESSION_SECONDS = 30 * 24 * 60 * 60;
+const tickets = new Set();
+const NOT_SIGNED_IN = { error: 'Not signed in to this RayTrace. Run: raytrace open', code: 'not_signed_in' };
 // The local sandboxes (raytrace sandbox create --local): in place of raytace's sandbox manager.
 const sandboxes = localSandboxes({ dataDir });
 const NO_VM = `Local sandbox VM (${VM}) not reachable. Start a sandbox with: raytrace sandbox start <name>`;
@@ -414,9 +422,24 @@ const server = createServer(async (req, res) => {
     catch { res.writeHead(404); return res.end('Dashboard not built.'); }
   }
   const localApi = req.url?.startsWith('/raytace/');
-  const corsHeaders = { ...(req.headers.origin && trustedOrigin(req.headers.origin) ? { 'access-control-allow-origin': req.headers.origin } : {}), vary: 'Origin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS', 'access-control-allow-headers': 'content-type,x-raytace-experiment,if-none-match', 'access-control-allow-private-network': 'true' };
+  const corsHeaders = { ...(req.headers.origin && trustedOrigin(req.headers.origin) ? { 'access-control-allow-origin': req.headers.origin } : {}), vary: 'Origin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS', 'access-control-allow-headers': 'authorization,content-type,x-raytace-experiment,if-none-match', 'access-control-allow-private-network': 'true' };
   const json = (status, value) => { res.writeHead(status, { 'content-type': 'application/json', ...corsHeaders, 'cache-control': 'no-store' }); res.end(JSON.stringify(redact(omitToolChunkIds(value)))); };
   if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders); return res.end(); }
+  const ticket = req.url?.match(/^\/raytace\/session\?ticket=([a-f0-9]{64})$/)?.[1];
+  if (req.method === 'GET' && ticket) {
+    if (!tickets.delete(ticket)) { res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }); return res.end('This link was used already, or has expired. Run: raytrace open\n'); }
+    res.writeHead(302, { location: '/', 'cache-control': 'no-store', 'set-cookie': `${sessionCookie(req.socket.localPort)}=${sessionFor(apiToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
+    return res.end();
+  }
+  // Only the API version is public: the CLI and dashboard read it to spot an outdated proxy.
+  if (localApi && req.url !== '/raytace/version' && !hasToken(req, apiToken) && !hasSession(req, apiToken, req.socket.localPort)) return json(401, NOT_SIGNED_IN);
+  if (req.method === 'POST' && req.url === '/raytace/session') {
+    if (!hasToken(req, apiToken)) return json(401, NOT_SIGNED_IN);
+    const issued = randomBytes(32).toString('hex');
+    tickets.add(issued);
+    setTimeout(() => tickets.delete(issued), TICKET_MS).unref();
+    return json(201, { ticket: issued });
+  }
   // This machine's local sandboxes. With the VM stopped they are still listed,
   // from the CLI's records, as stopped. Prompt history comes from the traces.
   if (req.method === 'GET' && req.url === '/raytace/sandboxes') {
@@ -810,6 +833,9 @@ const server = createServer(async (req, res) => {
   let routed;
   try { routed = routeRequest(routing, req, requestBody); }
   catch (error) { return json(400, { error: error.message }); }
+  // OpenRouter runs on this proxy's own key; the other providers on the
+  // client's, which it brought with it.
+  if (routed.provider === 'openrouter' && !hasToken(req, apiToken)) return json(401, NOT_SIGNED_IN);
   const traceId = req.headers['x-raytace-trace-id'] || req.headers['x-request-id'] || randomUUID(); const started = new Date().toISOString(); const selectedProvider = routed.provider;
   const spanId = randomUUID();
   const sessionId = req.headers['x-raytace-session-id'];
