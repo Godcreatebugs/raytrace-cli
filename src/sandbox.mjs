@@ -173,13 +173,23 @@ export async function stop(id, flags = {}) {
 export async function destroy(id, flags) {
   if (flags.local || local.isLocal(id)) return local.destroy(id, flags, { ask, interactive });
   id = await pickId(id);
+  const me = await call('GET', '/v1/me').catch(() => ({}));
+  const plan = me.plan ?? {};
+  const paid = plan.plan && plan.plan !== 'beta';
+  let keep = Boolean(flags['keep-traces']);
   if (!flags.yes) {
-    if (!interactive()) throw new Error('Pass --yes to destroy without a prompt.');
-    say(`This deletes ${id}: its files, and any sign-in made inside it. Recorded evidence is kept.`);
+    if (!interactive()) throw new Error('Pass --yes to destroy without a prompt (with --yes, traces are deleted unless --keep-traces is passed).');
+    say(`This deletes ${id}: its files, and any sign-in made inside it.`);
+    if (!paid) say('Free does not keep traces after destroy: its recorded traces are deleted too.\nTo keep them, upgrade to Pro first: https://raytracer.si/pricing');
     if ((await ask('Type the sandbox id to confirm: ')) !== id) { say('Not destroyed.'); return; }
+    if (paid && !keep) {
+      keep = /^y(es)?$/i.test((await ask('Keep its traces until your retention date? They stay readable and count against your evidences storage. [y/N] ')).trim());
+    }
   }
-  await call('DELETE', `/v1/sandboxes/${id}`);
+  const result = await call('DELETE', `/v1/sandboxes/${id}${keep ? '?keep_traces=1' : ''}`);
   say(`${id} destroyed.`);
+  if (result.traces_kept) say(`Its traces are kept until ${new Date(result.traces_kept_until * 1000).toLocaleDateString()}.`);
+  else if (result.traces_deleted === false) say('Note: its traces could not be deleted; they may still show on the dashboard.');
 }
 
 /** An interactive terminal in the sandbox, carried over one upgraded HTTP request.
