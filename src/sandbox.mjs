@@ -13,8 +13,9 @@ import { lstatSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
-import { accessToken, account, login } from './auth.mjs';
-import { readConfig } from './config.mjs';
+import { account } from './auth.mjs';
+import { api, call, ApiError, unreachable } from './api.mjs';
+import { betaStatus, formatCreditDeadline } from './beta.mjs';
 import { ask, confirm, interactive } from './prompt.mjs';
 import * as local from './local-sandbox.mjs';
 
@@ -27,9 +28,6 @@ const MAX_BYTES = 200 * MIB;    // all files, before compression
 const MAX_FILES = 20_000;
 const MAX_ARCHIVE = 100 * MIB;  // the packed upload
 const ID = /^rtp-[a-f0-9]{32}$/;
-const API = 'https://api.raytracer.si';
-const unreachable = (url) => new Error(`Cannot reach RayTrace at ${url.origin}. Check your connection; `
-  + 'networks that inspect HTTPS (some company Wi-Fi) may block it.');
 
 // Never packed: version control, dependencies and build output (rebuilt in the
 // sandbox), and files that usually hold credentials.
@@ -43,34 +41,6 @@ export function packable(path) {
   const name = parts.at(-1);
   return !parts.some((part) => EXCLUDED.has(part) || part === '..') && !path.startsWith('/')
     && !name.startsWith('.env') && !SECRET_EXTENSIONS.test(name) && !SECRET_NAMES.has(name);
-}
-
-async function api() {
-  const config = readConfig();
-  const url = process.env.RAYTRACE_API_URL || config.RAYTRACE_API_URL || API;
-  let key = process.env.RAYTRACE_API_KEY || config.RAYTRACE_API_KEY || await accessToken();
-  if (!key) {
-    if (!interactive()) throw new Error('Not signed in. Run: raytrace auth login');
-    say('You are not signed in to RayTrace yet.');
-    await login();
-    key = await accessToken();
-    if (!key) throw new Error('Not signed in. Run: raytrace auth login');
-    say();
-  }
-  return { url: new URL(url), key };
-}
-
-async function call(method, path, { body, headers = {} } = {}) {
-  const { url, key } = await api();
-  let response;
-  try {
-    response = await fetch(new URL(path, url), { method, body, headers: { authorization: `Bearer ${key}`, ...headers } });
-  } catch {
-    throw unreachable(url);
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data;
 }
 
 /** The project's files git would track, minus what must not leave this machine. */
@@ -135,15 +105,52 @@ export async function create(flags) {
   if (!files.length) throw new Error('Nothing to upload.');
   // The same files, packed the same way, as a cloud sandbox gets: only the copy stays here.
   if (flags.local) return local.create(localName, { root, files, skipped, total, archive: await pack(root, files) });
+
+  // Beta credit: consumed by the first cloud sandbox created after
+  // redemption, only before its hard 3-day deadline. A local sandbox never
+  // uses it; an older backend (or no entitlement) never blocks a plain one.
+  let useCredit = false;
+  try {
+    const beta = await betaStatus();
+    const deadlinePassed = beta?.credit_expires_at && Date.parse(beta.credit_expires_at) <= Date.now();
+    if (beta && !beta.sandbox_consumed && deadlinePassed && (beta.entitled || beta.credit_usd)) {
+      say('Your $10 beta credit has expired: the 3 days ran out, and unused credit does not carry over.');
+      if (!interactive()) throw new Error('Beta credit expired; no sandbox was created. Ask RayTrace for a new code to try again.');
+      if (!(await confirm('Create a plain sandbox without beta credit?', false))) { say('Not created.'); return; }
+    } else if (beta?.entitled && !beta.sandbox_consumed) {
+      useCredit = true;
+      say(`Using your $${beta.credit_usd ?? 10} beta credit (OpenRouter) on this sandbox`
+        + `${beta.credit_expires_at ? ` — credit ends ${formatCreditDeadline(beta.credit_expires_at)}` : ''}.`);
+    }
+  } catch (error) {
+    if (/Beta credit expired/.test(error.message)) throw error;
+    // No beta answer (old backend, signed out, unreachable): proceed plain;
+    // the create call below surfaces any real auth/network failure.
+  }
   say(`Packing ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root}`);
   if (skipped.length) say(`Not uploaded (${skipped.length}): ${skipped.slice(0, 8).join(', ')}${skipped.length > 8 ? ', ...' : ''}`);
   const archive = await pack(root, files);
   if (archive.length > MAX_ARCHIVE) throw new Error(`The packed project is ${Math.round(archive.length / MIB)} MiB; the most is ${MAX_ARCHIVE / MIB} MiB.`);
   say('Creating the sandbox (the first one on a host takes a little longer)...');
-  const box = await call('POST', '/v1/sandboxes', {
-    body: archive, headers: { 'content-type': 'application/gzip', 'x-raytrace-name': name.replace(/[^A-Za-z0-9._ -]/g, '-').slice(0, 100) },
-  });
+  const headers = { 'content-type': 'application/gzip', 'x-raytrace-name': name.replace(/[^A-Za-z0-9._ -]/g, '-').slice(0, 100) };
+  let box;
+  try {
+    box = await call('POST', '/v1/sandboxes', {
+      body: archive, headers: useCredit ? { ...headers, 'x-raytrace-beta-credit': '1' } : headers,
+    });
+  } catch (error) {
+    if (!useCredit || !(error instanceof ApiError) || ![409, 410].includes(error.status)) throw error;
+    say(error.status === 410 ? 'Your beta credit expired before the sandbox was created.'
+      : 'Your beta credit was already used on another sandbox.');
+    if (!interactive() || !(await confirm('Create a plain sandbox without beta credit?', false))) {
+      throw new Error('Beta credit not applied; no sandbox was created.');
+    }
+    box = await call('POST', '/v1/sandboxes', { body: archive, headers });
+  }
   say(`\nSandbox ${box.id} is running.`);
+  if (box.credit_applied) {
+    say(`Beta credit applied: $${box.credit_usd ?? 10} (OpenRouter)${box.credit_expires_at ? `, ends ${formatCreditDeadline(box.credit_expires_at)}` : ''}. This sandbox shows as Beta in the dashboard.`);
+  }
   say(box.transcripts ? 'Claude Code sessions in it are recorded.'
     : `Claude Code transcripts are off: ${box.transcripts_off}. Commands are still recorded.`);
   say(`Open it:  raytrace connect ${box.id}`);
@@ -157,7 +164,8 @@ export async function list(flags = {}) {
     // The sandbox's creation time (seconds), or its container's once that is known.
     const created = typeof box.created === 'number' ? box.created * 1000 : Date.parse(box.created);
     const age = Math.round((Date.now() - created) / 60000);
-    say(`${box.id}  ${String(box.status).padEnd(8)}  ${box.name}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old)`);
+    const beta = box.beta ? `  Beta${typeof box.credit_usd === 'number' ? ` ($${Math.max(0, box.credit_usd - (box.credit_spent_usd ?? 0)).toFixed(2)} of $${box.credit_usd} left${box.credit_expires_at ? `, ends ${formatCreditDeadline(box.credit_expires_at)}` : ''})` : ''}` : '';
+    say(`${box.id}  ${String(box.status).padEnd(8)}  ${box.name}${beta}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old)`);
   }
 }
 
@@ -192,6 +200,17 @@ export async function destroy(id, flags) {
   else if (result.traces_deleted === false) say('Note: its traces could not be deleted; they may still show on the dashboard.');
 }
 
+/** Exported for tests: the warning shown when connecting to a beta sandbox
+ * whose 3 days are up, or null. Model calls inside are refused by the
+ * backend; the sandbox itself still opens. */
+export function betaExpiryWarning(beta, id, now = Date.now()) {
+  if (!beta || beta.credited_sandbox_id !== id) return null;
+  const deadline = beta.credit_expires_at ? Date.parse(beta.credit_expires_at) : NaN;
+  if (!beta.expired && !(deadline <= now)) return null;
+  return `Warning: your beta credit for this sandbox expired${beta.credit_expires_at ? ` (${formatCreditDeadline(beta.credit_expires_at, now)})` : ''}; `
+    + 'model calls in this sandbox will be refused. The sandbox itself still opens.';
+}
+
 /** An interactive terminal in the sandbox, carried over one upgraded HTTP request.
  * `raytrace connect <id>` and `raytrace sandbox shell [id]` are the same thing. */
 export async function shell(id, flags = {}) {
@@ -199,6 +218,10 @@ export async function shell(id, flags = {}) {
   // With no id and no cloud sign-in, the one local sandbox is the likely one.
   if (flags.local || local.isLocal(id) || (!id && Object.keys(local.registry()).length && !account())) return local.shell(id);
   id = await pickId(id);
+  try {
+    const warning = betaExpiryWarning(await betaStatus(), id);
+    if (warning) say(warning);
+  } catch { /* no beta answer: connecting must not depend on it */ }
   const { url, key } = await api();
   const { stdin, stdout } = process;
   const path = `/v1/sandboxes/${id}/shell?rows=${stdout.rows || 24}&cols=${stdout.columns || 80}`;

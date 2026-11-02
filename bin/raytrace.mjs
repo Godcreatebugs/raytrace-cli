@@ -18,6 +18,8 @@ Cloud sandboxes:
                                             (up to 200 MiB, 25 MiB a file, 20,000 files)
   raytrace connect [id]                     a terminal in it; with one sandbox the id is
                                             optional (same as: raytrace sandbox shell [id])
+  raytrace --code <code>                    beta invite: redeem a code RayTrace gave you for one
+                                            $10-credit sandbox (signed in first; also: raytrace code <code>)
   raytrace sandbox list
   raytrace sandbox start|stop [id]
   raytrace sandbox destroy [id] [--yes] [--keep-traces]
@@ -78,6 +80,16 @@ if (command === '--version' || command === '-v') {
   process.exit(0);
 }
 if (!command || command === 'help' || command === '--help' || command === '-h') { console.log(HELP); process.exit(0); }
+
+// `raytrace --code <code>` (also `raytrace code <code>`): redeem a beta code.
+if (command === '--code' || command.startsWith('--code=') || command === 'code') {
+  const beta = await import('../src/beta.mjs');
+  const code = command.startsWith('--code=') ? command.slice('--code='.length) : rest[0];
+  const extra = command.startsWith('--code=') ? rest.length : rest.length - 1;
+  if (!code || extra !== 0) { console.error('Usage: raytrace --code <code>'); process.exit(2); }
+  try { await beta.redeemBetaCode(code); process.exit(0); }
+  catch (error) { console.error(`raytrace --code: ${error.message}`); process.exit(1); }
+}
 
 const commands = await import('../src/commands.mjs');
 
