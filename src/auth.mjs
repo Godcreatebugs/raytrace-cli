@@ -75,15 +75,42 @@ function keep(data) {
     access_token: data.access_token, refresh_token: data.refresh_token,
     user: { id: data.user?.id, email: data.user?.email, name: [data.user?.first_name, data.user?.last_name].filter(Boolean).join(' ') },
     organization_id: data.organization_id ?? null,
+    last_used_at: Date.now(),
   };
 }
+
+// Cloud use asks for a fresh sign-in after 2 idle days (sliding: any cloud
+// command resets the clock). Local recording never consults this.
+export const CLOUD_IDLE_LIMIT_MS = 2 * 86_400_000;
+const TOUCH_EVERY_MS = 3_600_000; // last_used_at is rewritten at most hourly
+let idleNotice = false;
+
+export const isIdleExpired = (session, now = Date.now()) =>
+  Boolean(session?.last_used_at && now - session.last_used_at > CLOUD_IDLE_LIMIT_MS);
+
+/** True once after accessToken() dropped a session for idleness. */
+export function consumeIdleNotice() { const was = idleNotice; idleNotice = false; return was; }
 
 /** A current access token, refreshed when it is about to expire; null when signed out. */
 export async function accessToken() {
   const session = load();
   if (!session?.access_token) return null;
+  if (isIdleExpired(session)) {
+    // Idle too long: drop the session so the cloud path starts a fresh
+    // sign-in and continues (it says why via consumeIdleNotice()).
+    forget();
+    idleNotice = true;
+    return null;
+  }
   const { exp = 0 } = claims(session.access_token);
-  if (exp * 1000 - Date.now() > 60_000) return session.access_token;
+  if (exp * 1000 - Date.now() > 60_000) {
+    // Sliding window: cloud use resets the idle clock (throttled writes;
+    // sessions saved before this field existed start their clock now).
+    if (!session.last_used_at || Date.now() - session.last_used_at > TOUCH_EVERY_MS) {
+      try { save({ ...session, last_used_at: Date.now() }); } catch { /* the token still works */ }
+    }
+    return session.access_token;
+  }
   if (!session.refresh_token) return null;
   const { status, data } = await workos('/authenticate', {
     grant_type: 'refresh_token', refresh_token: session.refresh_token, client_id: CLIENT_ID,
@@ -154,6 +181,13 @@ export async function status() {
   say(`Organization: ${org || session.organization_id || 'personal'}`);
   const left = Math.round((exp * 1000 - Date.now()) / 60000);
   say(left > 0 ? `Access token valid for ${left} more min; renewed automatically.` : 'Access token expired; it is renewed on the next command.');
+  // Beta is a cloud entitlement, separate from any local licence tier.
+  try {
+    const { betaStatus, formatCreditDeadline } = await import('./beta.mjs');
+    const beta = await betaStatus();
+    if (beta?.sandbox_consumed) say(`Beta: $10 credit used${beta.credited_sandbox_id ? ` on ${beta.credited_sandbox_id}` : ''}.`);
+    else if (beta?.entitled) say(`Beta: $${beta.credit_usd ?? 10} credit available${beta.credit_expires_at ? ` until ${formatCreditDeadline(beta.credit_expires_at)}` : ''} (raytrace sandbox create).`);
+  } catch { /* no beta entitlement, old backend, or offline: nothing to add */ }
 }
 
 export async function logout() {

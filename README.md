@@ -185,12 +185,36 @@ raytrace key              # which keys are set
 | `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
 | `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
 | `raytrace auth login` | sign in to RayTrace; `status`, `logout` |
+| `raytrace --code <code>` | beta invite: redeem a code RayTrace gave you (signed in first) for one $10-credit sandbox; codes are single-use, are deleted on redemption, and expire after 3 days, as does the credit |
 | `raytrace sandbox create --local [--name <name>]` | the same sandbox in a Linux VM on this machine; offers to download Lima if needed (`--yes` skips the question) |
 | `raytrace sandbox list --local` | your local sandboxes; their names work with `connect`, `start`, `stop` and `destroy` |
 | `raytrace sandbox destroy <name> [--delete-logs \| --keep-logs]` | delete a local sandbox; asks whether its captured logs go too, or move to `~/.raytrace/archive` |
 | `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded trace to terminal or owner-only file without running the proxy |
 | `raytrace doctor` | what this machine has and lacks, local sandboxes included |
 | `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features; asked for, never taken as an argument |
+
+## Beta invites
+
+If RayTrace gave you a beta code, sign in first, redeem it, then create your
+sandbox — in that order:
+
+```sh
+raytrace auth login
+raytrace --code <code>          # also: raytrace code <code>
+raytrace sandbox create
+```
+
+Redeeming deletes the code on RayTrace's servers; it can never be used
+again, by anyone. Codes expire 3 days after they are issued, and the $10 of
+OpenRouter credit expires 3 days after you redeem it, so do not sit on
+either. Your account shows as **Beta** in the cloud dashboard until the
+credit ends, and the credited sandbox is tagged Beta there too. Connecting
+to a credited sandbox after its 3 days are up warns you that model calls
+will be refused; the sandbox itself still opens.
+
+Codes are minted only from the backend repo (`raytrace`:
+`python3 worker/gvisor/mint_beta_codes.py`, 10 at a time); this CLI never
+generates them.
 
 ## Exporting traces
 
@@ -222,7 +246,9 @@ RayTrace's servers.
   organizations cannot.
 - `raytrace auth login` keeps your sign-in in the macOS Keychain or the Linux
   secret service (a file readable only by you where neither is available), and
-  `raytrace auth logout` removes it.
+  `raytrace auth logout` removes it. Cloud commands ask you to sign in again
+  after 2 days with no cloud use (any cloud command resets that clock); the
+  command then continues where it left off. Local recording never asks.
 - What RayTrace records locally stays in `~/.raytrace`, readable only by you.
   Its local API takes the token in `~/.raytrace/api-token`, so another account
   on the machine cannot read your traces or spend your OpenRouter key through
