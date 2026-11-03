@@ -28,8 +28,9 @@
  * with the real exit code. Until the exit arrives the UI keeps showing its
  * text heuristic for that call rather than asserting an outcome it lacks.
  */
+import { readFileSync } from 'node:fs';
 
-// rtp- a project's sandbox, rtf- a Playground fork of one (worker/sandbox/projects.py).
+// rtp- a project's sandbox, rtf- a Playground fork of one (worker/gvisor/projects.py).
 export const SANDBOX_ID = /^rt[pf]-[a-f0-9]{32}$/;
 export const CONTAINER_ID = /^[a-f0-9]{64}$/;
 
@@ -54,6 +55,8 @@ export function clockFromSamples(samples) {
  * which is how a pid (reused across sandboxes) is scoped back to its own. */
 export const rowPrefix = (containerId) => `gvisor-${typeof containerId === 'string' && containerId ? containerId.slice(0, 12) : 'unknown'}-`;
 
+const eventRowId = event => `${rowPrefix(event.container_id)}${event.source_instance_id && event.source_connection_id ? `${event.source_instance_id}:${event.source_connection_id}:` : ''}${Number(event.event_id)}`;
+
 /** ns-since-epoch (as the collector's string) -> ms, or null if unparseable. */
 export function msFromNs(ns) {
   if (ns == null || ns === '') return null;
@@ -65,7 +68,6 @@ export function msFromNs(ns) {
 
 /** The call id a command's own text exports, or null. */
 export function commandMarker(command) {
-  // Claude Code runs the command as `eval '<it>'`, so the export may follow the quote.
   return /(?:^|[\s;'])export RAYTRACE_CALL_ID=([A-Za-z0-9_-]{1,128})(?=[\s;]|$)/.exec(String(command ?? ''))?.[1] ?? null;
 }
 
@@ -85,17 +87,17 @@ export function toExecutionEvent(event, clock = UNMEASURED_CLOCK) {
   const eventId = Number(event.event_id);
   if (!command || timestamp == null || !Number.isFinite(pid) || !Number.isFinite(eventId)) return null;
   // `markers` is the collector's allowlisted RAYTRACE_* env (see
-  // worker/sandbox/collector.py MARKER_KEYS). When RAYTRACE_CALL_ID is present
+  // worker/gvisor/collector.py MARKER_KEYS). When RAYTRACE_CALL_ID is present
   // it IS the answer -- the call id travelled with the process -- and the
   // text matcher is skipped entirely. Absent on every event until something
   // in the spawn path stamps it, which is why the matcher stays the default.
   // A sandboxed Claude Code stamps it in the command itself (`export
-  // RAYTRACE_CALL_ID=...`, worker/sandbox/claude-hook.mjs): the shell that
+  // RAYTRACE_CALL_ID=...`, worker/gvisor/claude-hook.mjs): the shell that
   // runs the command carries it in argv, the programs it starts in env.
   const marker = (event.markers && typeof event.markers === 'object' ? event.markers.RAYTRACE_CALL_ID : null)
     ?? commandMarker(command);
   return {
-    id: `${rowPrefix(event.container_id)}${eventId}`,
+    id: eventRowId(event),
     pid,
     ppid: Number.isFinite(Number(event.ppid)) ? Number(event.ppid) : null,
     command,
@@ -125,7 +127,7 @@ export function toFailedExec(event, clock = UNMEASURED_CLOCK) {
   if (!argv.length || observed == null || !Number.isFinite(pid) || !Number.isFinite(eventId)) return null;
   const at = new Date(observed - clock.offsetMs).toISOString();
   return {
-    id: `${rowPrefix(event.container_id)}${eventId}`,
+    id: eventRowId(event),
     pid,
     ppid: Number.isFinite(Number(event.ppid)) ? Number(event.ppid) : null,
     command: argv.join(' ').trim(),
@@ -185,14 +187,20 @@ export class SandboxTracker {
  * @param {{offsetMs: number, marginMs: number}} [deps.clock] - VM->proxy clock mapping
  * @returns {Promise<{forwarded: number, matched: number, finished: number, descendants: number, unattributed: number, failedExecs: number, lost: number}>}
  */
-export async function processEvents(events, { sessionId, tracker, ingest, finish, descend = () => {}, finishByProcess = () => false, lose = () => 0, clock = UNMEASURED_CLOCK }) {
+export async function processEvents(events, { sessionId, tracker, ingest, finish, descend = () => {}, finishByProcess = () => false, lose = () => 0, recordCapture = async () => {}, clock = UNMEASURED_CLOCK }) {
   const counts = { forwarded: 0, matched: 0, finished: 0, descendants: 0, unattributed: 0, failedExecs: 0, lost: 0 };
   const ordered = (Array.isArray(events) ? events : [])
     .filter((event) => Number.isFinite(Number(event?.event_id)) && Number(event.event_id) > tracker.cursor)
     .sort((a, b) => Number(a.event_id) - Number(b.event_id));
 
-  for (const event of ordered) {
-    tracker.cursor = Number(event.event_id);
+  for (const sourceEvent of ordered) {
+    const event=clock.measured && Number.isFinite(sourceEvent.received_ms) ? {...sourceEvent,
+      recorded_at_ms:Math.round(sourceEvent.received_ms-clock.offsetMs),
+      ...(Number.isFinite(sourceEvent.gap_from_ms)?{gap_from_ms:Math.round(sourceEvent.gap_from_ms-clock.offsetMs)}:{})} : sourceEvent;
+    const previousLive = new Map(tracker.live);
+    const restoreLive = () => { tracker.live.clear(); for (const [pid,entry] of previousLive) tracker.live.set(pid,entry); };
+    let failed = false;
+    try {
     if (event.kind === 'exec_succeeded') {
       const exec = toExecutionEvent(event, clock);
       if (!exec) continue;
@@ -269,29 +277,50 @@ export async function processEvents(events, { sessionId, tracker, ingest, finish
       counts.lost += Number(await lose({ container_id: event.container_id, session_id: sessionId, reason: 'collector disconnected', raw: event })) || 0;
       tracker.live.clear();
     }
+    } catch (error) { failed = true; restoreLive(); throw error; }
+    finally {
+      if (!failed) {
+        try { await recordCapture({containerId:event.container_id,projectId:sessionId,raw:event}); }
+        catch (error) { restoreLive(); throw error; }
+        tracker.cursor = Number(event.event_id);
+      }
+    }
   }
   return counts;
 }
 
+/** What a request to the viewer carries (worker/gvisor/viewer.py): the token
+ * from the control plane's env, or the one in `file`, which sandbox setup makes.
+ * Read each time, as setup may come after this process starts. */
+export function viewerAuth(file) {
+  let token = process.env.RAYTACE_VIEWER_TOKEN;
+  if (!token && file) try { token = readFileSync(file, 'utf8').trim(); } catch { /* no sandboxes set up yet */ }
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 /**
- * Discovers sandboxes from `listProjects()` (the local sandboxes, each rtp-
- * id with its container id; or a manager's `/api/projects` at managerBase), tails each container's events
+ * Discovers sandboxes from the Mac-side manager (:8799, `/api/projects`
+ * maps each rtp- id to its container id), tails each container's events
  * from the evidence viewer (:8798), and runs them through processEvents().
  * Best-effort throughout: the manager or viewer being down just means no
  * gVisor evidence for now -- logged once per outage, never fatal to the
  * proxy, never a wrong row.
  */
 export function startGvisorForwarder({
+  listProjects,
   managerBase = 'http://127.0.0.1:8799',
-  listProjects = null,
   viewerBase = 'http://127.0.0.1:8798',
   ingest,
   finish,
   descend,
   finishByProcess,
   lose,
+  recordCapture,
+  loadCheckpoint = async () => 0,
+  saveProgress = async () => {},
   log = (message) => console.error(message),
   fetchImpl = globalThis.fetch,
+  viewerHeaders = () => ({}),
   pollMs = 1500,
   discoverMs = 10_000,
   // First discovery is deferred a little so a proxy that starts with no
@@ -310,22 +339,10 @@ export function startGvisorForwarder({
   let polling = null;
   let stopped = false;
 
-  const getJson = async (url) => {
-    const res = await fetchImpl(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`${res.status} from ${url}`);
+  const getJson = async (url, headers = {}) => {
+    const res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw Object.assign(new Error(`${res.status} from ${url}`),{status:res.status});
     return res.json();
-  };
-
-  /** Highest event id the collector currently holds for a container, used to
-   * seed a new tracker so tailing begins at "now". Falls back to 0 -- which
-   * replays history -- only if the viewer cannot be reached, since starting
-   * over-inclusive is recoverable and starting blind is not. */
-  const latestEventId = async (containerId) => {
-    try {
-      const page = await getJson(`${viewerBase}/events?container=${containerId}&limit=1&processes=1`);
-      const ids = (page?.events ?? []).map((e) => Number(e?.event_id)).filter(Number.isFinite);
-      return ids.length ? Math.max(...ids) : 0;
-    } catch { return 0; }
   };
 
   const discover = () => {
@@ -340,7 +357,7 @@ export function startGvisorForwarder({
   const sampleClock = async () => {
     try {
       const sent = Date.now();
-      const body = await getJson(`${viewerBase}/time`);
+      const body = await getJson(`${viewerBase}/time`, viewerHeaders());
       const received = Date.now();
       const vmMs = msFromNs(body?.realtime_ns);
       if (vmMs == null) throw new Error('no realtime_ns in /time response');
@@ -358,7 +375,7 @@ export function startGvisorForwarder({
 
   const discoverOnce = async () => {
     try {
-      const projects = listProjects ? await listProjects() : await getJson(`${managerBase}/api/projects`);
+      const projects = typeof listProjects==='function' ? await listProjects() : await getJson(`${managerBase}/api/projects`);
       await sampleClock();
       const present = new Set();
       for (const project of Array.isArray(projects) ? projects : []) {
@@ -371,15 +388,8 @@ export function startGvisorForwarder({
         present.add(containerId);
         if (!sandboxes.has(containerId)) {
           const tracker = new SandboxTracker();
-          // Start from the newest event, not from zero. The collector's
-          // evidence store lives in the VM and is append-only, so it outlives
-          // any proxy restart: a tracker that begins at 0 re-reads days of
-          // history on every start. Those old execs can never match anything
-          // -- the proxy was not capturing model traffic then, so no proposed
-          // call exists for them -- and since they now get written as
-          // unattributed rows rather than dropped, the replay floods the
-          // table and pushes the live session behind a backlog.
-          tracker.cursor = await latestEventId(containerId);
+          // Source identity and the durable checkpoint are loaded on poll.
+          tracker.cursor = 0; // Backfill safely until a durable source checkpoint is loaded.
           sandboxes.set(containerId, { sessionId, tracker });
           log(`[raytace][gvisor] forwarding evidence for sandbox ${sessionId} (container ${containerId.slice(0, 12)}) from event ${tracker.cursor}`);
         }
@@ -397,9 +407,7 @@ export function startGvisorForwarder({
     } catch (error) {
       if (!managerDown) {
         managerDown = true;
-        log(listProjects
-          ? `[raytace][gvisor] local sandboxes not reachable (${error.message}) -- gVisor evidence forwarding idle until they are`
-          : `[raytace][gvisor] sandbox manager not reachable at ${managerBase} (${error.message}) -- gVisor evidence forwarding idle until it is`);
+        log(`[raytace][gvisor] sandbox manager not reachable at ${managerBase} (${error.message}) -- gVisor evidence forwarding idle until it is. Start it with: npm run sandbox:manager`);
       }
     }
   };
@@ -407,17 +415,41 @@ export function startGvisorForwarder({
   const poll = () => {
     if (stopped || !sandboxes.size) return Promise.resolve();
     if (polling) return polling;
-    polling = pollOnce().finally(() => { polling = null; });
+    polling = pollOnce().catch(error=>log(`[raytace][gvisor] recording progress could not be saved: ${error.message}`)).finally(() => { polling = null; });
     return polling;
   };
   const pollOnce = async () => {
     for (const [containerId, { sessionId, tracker }] of sandboxes) {
+      let coverage;
+      try { coverage = await getJson(`${viewerBase}/coverage?container=${containerId}`, viewerHeaders()); }
+      catch(error) {
+        if(error.status!==404) {
+          if(tracker.sourceId) await saveProgress({containerId,projectId:sessionId,sourceId:tracker.sourceId,cursor:tracker.cursor,
+            coverage:{streams:[],source_instance_id:tracker.sourceId,unavailable:true,checked_at_ms:Date.now()}});
+          continue;
+        }
+        coverage={streams:[],source_instance_id:'legacy',latest:0,checked_at_ms:Date.now()};
+      }
+      const sourceId=coverage.source_instance_id || 'legacy';
+      if(tracker.sourceId !== sourceId) {
+        tracker.cursor=Number(await loadCheckpoint(containerId,sourceId,sessionId)) || 0;
+        tracker.sourceId=sourceId; tracker.live.clear();
+      }
       const url = `${viewerBase}/events?container=${containerId}&after=${tracker.cursor}&limit=500&processes=1`;
       let page;
-      try { page = await getJson(url); } catch (error) {
-        if (!viewerDown) { viewerDown = true; log(`[raytace][gvisor] evidence viewer not reachable at ${viewerBase} (${error.message}) -- is the sandbox VM running?`); }
+      try { page = await getJson(url, viewerHeaders()); } catch (error) {
+        await saveProgress({containerId,projectId:sessionId,sourceId,cursor:tracker.cursor,
+          coverage:{...coverage,streams:[],unavailable:true,checked_at_ms:Date.now()}});
+        if (!viewerDown) { viewerDown = true; log(`[raytace][gvisor] evidence viewer not reachable at ${viewerBase} (${error.message})`); }
         continue;
       }
+      if(sourceId==='legacy' && page?.coverage?.source_instance_id) coverage=page.coverage;
+      coverage={...coverage,checked_at_ms:Date.now(),clock_measured:clock.measured,
+        heartbeat_ms:clock.measured && coverage.heartbeat_ms ? Math.round(coverage.heartbeat_ms-clock.offsetMs) : null,
+        streams:(coverage.streams??[]).map(stream=>({...stream,clock_measured:clock.measured,
+          started_ms:Math.round(stream.started_ms-clock.offsetMs),
+          ended_ms:stream.ended_ms==null?null:Math.round(stream.ended_ms-clock.offsetMs),
+          heartbeat_ms:Math.round(stream.heartbeat_ms-clock.offsetMs)}))};
       if (viewerDown) { viewerDown = false; log('[raytace][gvisor] evidence viewer reachable again'); }
       // An ingest/finish failure (e.g. a DB error) must not stall the loop
       // or leave the cursor wedged; log it and move on to the next poll.
@@ -425,7 +457,14 @@ export function startGvisorForwarder({
         const counts = await processEvents(page?.events, { sessionId, tracker, ingest, finish, descend,
           ...(typeof finishByProcess === 'function' ? { finishByProcess } : {}),
           ...(typeof lose === 'function' ? { lose } : {}),
-          clock });
+          ...(typeof recordCapture === 'function' ? {recordCapture} : {}), clock });
+        // Exhausted selected events: acknowledge excluded source rows too,
+        // otherwise a non-process event would keep us catching up forever.
+        if(!page.next_after) {
+          tracker.cursor=Math.max(tracker.cursor,Number(page.coverage?.latest??coverage.latest)||0);
+          if(clock.measured)coverage.forwarded_through_ms=coverage.heartbeat_ms;
+        }
+        await saveProgress({containerId,projectId:sessionId,sourceId,cursor:tracker.cursor,coverage});
         if (counts.matched || counts.finished || counts.descendants || counts.unattributed || counts.failedExecs || counts.lost) {
           log(`[raytace][gvisor] ${sessionId.slice(0, 12)}: ${counts.matched} exec(s) matched to proposed calls, `
             + `${counts.descendants} descendant(s), ${counts.unattributed} unattributed, ${counts.failedExecs} failed exec(s), `

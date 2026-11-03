@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toExecutionEvent, toFailedExec, exitOutcome, msFromNs, processEvents, SandboxTracker, startGvisorForwarder, clockFromSamples, UNMEASURED_CLOCK } from './gvisor-forwarder.mjs';
+import { toExecutionEvent, toFailedExec, exitOutcome, msFromNs, processEvents, SandboxTracker, startGvisorForwarder, viewerAuth, clockFromSamples, UNMEASURED_CLOCK } from './gvisor-forwarder.mjs';
 
 // Event shapes below mirror what worker/gvisor/collector.py writes and
 // viewer.py serves (see `decode()` there): timestamp_ns / process_start_ns
@@ -36,6 +36,12 @@ test('toExecutionEvent carries RAYTRACE_CALL_ID through, and ignores other marke
   // A session marker alone is not a per-call join; it must not become one.
   assert.equal(toExecutionEvent({ ...exec(8, 10, 1, ['ls']), markers: { RAYTRACE_SESSION: 'rtp-x' } }).call_marker, null);
   assert.equal(toExecutionEvent({ ...exec(9, 10, 1, ['ls']), markers: { RAYTRACE_CALL_ID: '' } }).call_marker, null);
+});
+
+test('recreated collector event IDs cannot overwrite earlier executions',()=>{
+ const raw={...exec(1,10,1,['ls']),source_instance_id:'boot-a',source_connection_id:'connection'};
+ assert.notEqual(toExecutionEvent(raw).id,toExecutionEvent({...raw,source_instance_id:'boot-b'}).id);
+ assert.notEqual(toExecutionEvent(raw).id,toExecutionEvent({...raw,source_connection_id:'replacement'}).id);
 });
 
 test('toExecutionEvent rejects anything that is not a usable exec', () => {
@@ -203,6 +209,7 @@ test('startGvisorForwarder discovers sandboxes from the manager and tails each c
     // limit=1 is the cursor seed probe; this container has no history yet.
     if (url.includes('limit=1')) return { ok: true, json: async () => ({ events: [], next_before: null }) };
     if (url.includes('/events?')) return { ok: true, json: async () => ({ events: [exec(1, 5, 1, ['/bin/bash', '-lc', 'pwd']), exit(2, 5, 0)], next_before: null }) };
+    if(url.includes('/coverage?'))return {ok:false,status:404};
     throw new Error('unexpected ' + url);
   };
   const { ingest } = fakeIngest(['pwd']);
@@ -226,7 +233,7 @@ test('startGvisorForwarder discovers sandboxes from the manager and tails each c
   } finally { forwarder.stop(); }
 });
 
-test('a newly discovered sandbox starts at the newest event, not at zero', async () => {
+test('a newly discovered sandbox resumes a durable checkpoint instead of skipping history', async () => {
   // The collector's evidence store lives in the VM and is append-only, so it
   // outlives the proxy. Beginning at 0 re-reads every past session: none of it
   // can match (no proposed calls were captured then), so it all lands as
@@ -239,13 +246,13 @@ test('a newly discovered sandbox starts at the newest event, not at zero', async
     return { ok: true, json: async () => ({ events: [] }) };
   };
   const logs = [];
-  const forwarder = startGvisorForwarder({ ingest: async () => new Map(), finish: async () => true, fetchImpl, log: (m) => logs.push(m), pollMs: 60_000, discoverMs: 60_000 });
+  const forwarder = startGvisorForwarder({ ingest: async () => new Map(), finish: async () => true, loadCheckpoint:async()=>4096, fetchImpl, log: (m) => logs.push(m), pollMs: 60_000, discoverMs: 60_000 });
   try {
     await forwarder.discover();
-    assert.equal(forwarder.sandboxes.get(CONTAINER).tracker.cursor, 4096, 'seeded past the backlog');
+    assert.equal(forwarder.sandboxes.get(CONTAINER).tracker.cursor, 0, 'does not skip history at discovery');
     await forwarder.poll();
     assert.ok(requested.some((u) => u.includes('&after=4096&')), 'tails forward from there');
-    assert.ok(logs.some((m) => m.includes('from event 4096')));
+    assert.equal(forwarder.sandboxes.get(CONTAINER).tracker.cursor,4096,'loads the saved checkpoint on first poll');
   } finally { forwarder.stop(); }
 });
 
@@ -342,6 +349,7 @@ test('startGvisorForwarder measures the VM clock, falls back when it cannot, and
       return { ok: true, json: async () => ({ realtime_ns: NS(Date.now() + 3000) }) };
     }
     if (url.includes('/events?')) return { ok: true, json: async () => ({ events: [] }) };
+    if(url.includes('/coverage?'))return {ok:false,status:404};
     throw new Error('unexpected ' + url);
   };
   const lost = [];
@@ -365,4 +373,61 @@ test('startGvisorForwarder measures the VM clock, falls back when it cannot, and
     assert.deepEqual(lost, [{ container_id: CONTAINER, session_id: SESSION, reason: 'sandbox removed', ended: true }]);
     assert.ok(logs.some((m) => m.includes('is gone') && m.includes('1 open execution(s) marked unknown')));
   } finally { forwarder.stop(); }
+});
+
+test('the viewer gets its token and the manager does not', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push([url, init.headers.authorization]);
+    if (url.endsWith('/api/projects')) return { ok: true, json: async () => [{ id: SESSION, container_id: CONTAINER }] };
+    if (url.endsWith('/time')) return { ok: true, json: async () => ({ realtime_ns: String(Date.now() * 1e6) }) };
+    return { ok: true, json: async () => ({ events: [] }) };
+  };
+  const forwarder = startGvisorForwarder({ ingest: async () => new Map(), finish: async () => true, fetchImpl, viewerHeaders: () => ({ authorization: 'Bearer viewer' }), log: () => {}, pollMs: 1e6, discoverMs: 1e6, initialDelayMs: 1e6 });
+  try {
+    await forwarder.discover();
+    await forwarder.poll();
+    assert.ok(seen.some(([url]) => url.includes('/events?')));
+    for (const [url, header] of seen) assert.equal(header, url.endsWith('/api/projects') ? undefined : 'Bearer viewer', url);
+  } finally { forwarder.stop(); }
+});
+
+test('viewerAuth prefers the environment and sends nothing without a token', () => {
+  const saved = process.env.RAYTACE_VIEWER_TOKEN;
+  try {
+    process.env.RAYTACE_VIEWER_TOKEN = 'from-env';
+    assert.deepEqual(viewerAuth('/nonexistent'), { authorization: 'Bearer from-env' });
+    delete process.env.RAYTACE_VIEWER_TOKEN;
+    assert.deepEqual(viewerAuth('/nonexistent'), {});
+  } finally { if (saved) process.env.RAYTACE_VIEWER_TOKEN = saved; }
+});
+
+test('a failed evidence write leaves the cursor unchanged and a retry records the event',async()=>{
+ const tracker=new SandboxTracker();let fails=true;
+ const deps={sessionId:SESSION,tracker,ingest:async()=>new Map(),finish:()=>{},descend:async()=>{if(fails)throw Error('disk full');}};
+ const rows=[exec(10,20,1,['npm','test'])];
+ await assert.rejects(processEvents(rows,deps),/disk full/);assert.equal(tracker.cursor,0);
+ fails=false;await processEvents(rows,deps);assert.equal(tracker.cursor,10);
+});
+test('a failed final raw-event write is retried without advancing past it',async()=>{
+ const tracker=new SandboxTracker();const event={event_id:1,kind:'collection_gap',container_id:CONTAINER,received_ms:100};
+ await assert.rejects(processEvents([event],{sessionId:SESSION,tracker,ingest:async()=>new Map(),finish:()=>{},recordCapture:async()=>{throw Error('write failed');}}));
+ assert.equal(tracker.cursor,0);
+});
+
+test('a failed exit write restores the tracked process for retry',async()=>{
+ const tracker=new SandboxTracker();tracker.live.set(20,{execId:'execution',callId:'call'});
+ let fail=true,finished=0;
+ const deps={sessionId:SESSION,tracker,ingest:async()=>new Map(),finish:async()=>{if(fail)throw Error('disk full');finished++;}};
+ const event={event_id:2,kind:'process_exit',pid:20,exit_code:1,container_id:CONTAINER};
+ await assert.rejects(processEvents([event],deps),/disk full/);
+ assert.equal(tracker.cursor,0);assert.equal(tracker.live.get(20).execId,'execution');
+ fail=false;await processEvents([event],deps);assert.equal(finished,1);assert.equal(tracker.cursor,2);
+});
+
+test('a source checkpoint failure does not reject the background poll and retries on the next poll',async()=>{
+ let fail=true,saved=0;
+ const fetchImpl=async url=>({ok:true,json:async()=>url.endsWith('/api/projects')?[{id:SESSION,container_id:CONTAINER}]:url.includes('/coverage?')?{source_instance_id:'boot',streams:[],latest:0}:{events:[]}});
+ const forwarder=startGvisorForwarder({ingest:async()=>new Map(),finish:()=>{},fetchImpl,log:()=>{},saveProgress:async()=>{if(fail)throw Error('disk full');saved++;},pollMs:60000,discoverMs:60000});
+ try{await forwarder.discover();await assert.doesNotReject(forwarder.poll());fail=false;await forwarder.poll();assert.equal(saved,1);}finally{forwarder.stop();}
 });

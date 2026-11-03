@@ -232,6 +232,13 @@ def init_db(path):
       id INTEGER PRIMARY KEY, connection TEXT NOT NULL, received_ms INTEGER NOT NULL,
       container_id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL)''')
     db.execute('CREATE INDEX IF NOT EXISTS runtime_container ON runtime_events(container_id,id)')
+    db.execute("CREATE TABLE IF NOT EXISTS collector_state (id INTEGER PRIMARY KEY CHECK(id=1), instance_id TEXT NOT NULL, heartbeat_ms INTEGER NOT NULL)")
+    db.execute("""CREATE TABLE IF NOT EXISTS capture_streams (
+      id TEXT PRIMARY KEY, collector_id TEXT NOT NULL, container_id TEXT NOT NULL,
+      started_ms INTEGER NOT NULL, ended_ms INTEGER, heartbeat_ms INTEGER NOT NULL,
+      dropped INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0,
+      capabilities_json TEXT NOT NULL)""")
+    db.execute('CREATE INDEX IF NOT EXISTS capture_stream_container ON capture_streams(container_id,started_ms)')
     db.commit()
     return db
 
@@ -244,26 +251,64 @@ class Writer(threading.Thread):
         super().__init__(daemon=True, name='raytace-writer')
         self.database = database
         self.rows = queue.SimpleQueue()
+        self.instance_id = str(uuid.uuid4())
+        self.last_heartbeat = None
+        self.capabilities = {'processes': True, 'files': False, 'network': False}
 
     def put(self, connection, event):
-        self.rows.put((connection, int(time.time() * 1000), event.get('container_id', ''), event['kind'], json.dumps(event)))
+        now = int(time.time() * 1000)
+        event = {**event, 'source_instance_id': self.instance_id, 'source_connection_id': connection, 'received_ms': now}
+        self.rows.put((connection, now, event.get('container_id', ''), event['kind'], json.dumps(event)))
+
+    def write_batch(self, db, batch, now=None):
+        """Events and health progress commit together; idle heartbeats add no event rows."""
+        now = int(time.time() * 1000) if now is None else now
+        wrote_heartbeat = False
+        with db:
+            for connection, received, container, kind, body in batch:
+                db.execute('INSERT INTO runtime_events(connection,received_ms,container_id,kind,body) VALUES(?,?,?,?,?)',
+                           (connection, received, container, kind, body))
+                event = json.loads(body)
+                db.execute("""INSERT INTO capture_streams VALUES(?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET
+                    container_id=CASE WHEN excluded.container_id <> '' THEN excluded.container_id ELSE capture_streams.container_id END,
+                    ended_ms=COALESCE(excluded.ended_ms,capture_streams.ended_ms),
+                    heartbeat_ms=CASE WHEN excluded.ended_ms IS NOT NULL THEN excluded.ended_ms ELSE capture_streams.heartbeat_ms END,
+                    dropped=capture_streams.dropped+excluded.dropped,
+                    errors=capture_streams.errors+excluded.errors""",
+                    (connection, self.instance_id, container, received,
+                     received if kind == 'collector_disconnected' else None, received,
+                     event.get('dropped_delta', 0) if kind == 'collection_gap' else 0,
+                     1 if kind == 'collection_error' else 0, json.dumps(self.capabilities)))
+                if container:
+                    # The greeting precedes container identification. Bind only
+                    # this connection's greeting once a real event names it.
+                    db.execute("UPDATE runtime_events SET container_id=? WHERE connection=? AND container_id=''", (container, connection))
+            if self.rows.empty() and (self.last_heartbeat is None or now-self.last_heartbeat>=5000):
+                wrote_heartbeat = True
+                db.execute('INSERT INTO collector_state VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id,heartbeat_ms=excluded.heartbeat_ms', (self.instance_id, now))
+                db.execute('UPDATE capture_streams SET heartbeat_ms=? WHERE collector_id=? AND ended_ms IS NULL', (now, self.instance_id))
+        if wrote_heartbeat:
+            self.last_heartbeat = now
 
     def run(self):
         db = init_db(self.database)
         while True:
-            batch = [self.rows.get()]
+            try:
+                batch = [self.rows.get(timeout=5)]
+            except queue.Empty:
+                batch = []
             deadline = time.monotonic() + 0.25
-            while len(batch) < 200:
+            while batch and len(batch) < 200:
                 try:
                     batch.append(self.rows.get(timeout=max(0.0, deadline - time.monotonic())))
                 except queue.Empty:
                     break
             while True:
                 try:
-                    db.executemany('INSERT INTO runtime_events(connection,received_ms,container_id,kind,body) VALUES(?,?,?,?,?)', batch)
-                    db.commit()
+                    self.write_batch(db, batch)
                     break
-                except sqlite3.Error as error:  # a locked or full database: keep the batch and try again
+                except sqlite3.Error as error:
                     print(f'RayTrace collector: runtime_events not written ({error}); retrying', flush=True)
                     time.sleep(1)
 
@@ -283,6 +328,7 @@ def serve(endpoint, database):
         try:
             engine = facts_engine.Engine(database)
             engine.start()
+            writer.capabilities.update(files=True, network=True)
         except Exception as error:
             print(f'RayTrace collector: fact engine not started ({error}); recording processes only', flush=True)
 
@@ -306,6 +352,7 @@ def serve(endpoint, database):
             conn.settimeout(None)
             record({'kind': 'collector_connected', 'source': 'collector'})
             previous_dropped = 0
+            previous_received = int(time.time()*1000)
             while True:
                 packet, _, flags, _ = conn.recvmsg(MAX_PACKET)
                 if not packet:
@@ -317,10 +364,11 @@ def serve(endpoint, database):
                     container = event['container_id']
                 if event['dropped_count'] != previous_dropped:
                     gap = {'kind': 'collection_gap', 'container_id': event['container_id'],
-                           'dropped_delta': (event['dropped_count'] - previous_dropped) % (1 << 32)}
+                           'gap_from_ms': previous_received, 'dropped_delta': (event['dropped_count'] - previous_dropped) % (1 << 32)}
                     record(gap)
                     taken(gap)
                     previous_dropped = event['dropped_count']
+                previous_received = int(time.time()*1000)
                 if not taken(event):
                     record(with_raw(event, packet))
         except Exception as error:

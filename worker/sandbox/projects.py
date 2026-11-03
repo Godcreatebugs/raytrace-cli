@@ -500,6 +500,14 @@ def evidence(container, forget=False):
         return
     with sqlite3.connect(RUNTIME_DB, timeout=30) as db:
         tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'capture_streams' in tables:
+            if forget:
+                db.execute('DELETE FROM capture_streams WHERE container_id=?', (container,))
+            else:
+                for row in db.execute('SELECT id,collector_id,started_ms,ended_ms,heartbeat_ms,dropped,errors,capabilities_json FROM capture_streams WHERE container_id=?', (container,)):
+                    names=('id','collector_id','started_ms','ended_ms','heartbeat_ms','dropped','errors','capabilities')
+                    body=dict(zip(names,row)); body['capabilities']=json.loads(body['capabilities'])
+                    print(json.dumps({'table':'capture_streams','body':body}))
         for table, columns in (('runtime_events', 'kind, received_ms, body'), ('facts', 'kind, at_ns, received_ms, body')):
             if table not in tables:
                 continue
