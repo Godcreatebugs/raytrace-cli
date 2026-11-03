@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openEvidenceStore } from '../proxy/evidence-store.mjs';
 import { pickSandbox, sandboxStats, snapshotEvidences } from '../src/upload.mjs';
+import { packable } from '../src/sandbox.mjs';
 
 const exchange = (id, session) => ({
   event_type: 'model.exchange', span_id: id, trace_id: 't', session_id: session,
@@ -39,5 +40,20 @@ test('snapshotEvidences makes a readable copy and sandboxStats counts its exchan
   assert.equal(stats.exchanges, 1);
   assert.equal(stats.turns, 1);
   assert.equal(sandboxStats(plain, 'rtp-' + 'd'.repeat(32)).exchanges, 0);
+});
+
+test('packable excludes secrets, keys, and credentials while allowing source code', () => {
+  const secretFiles = [
+    '.env', '.env.local', 'sub/.env', 'secret.pem', '.npmrc', '.git/config', 'node_modules/a.js',
+    'credentials.json', 'sub/credentials.json', '.claude/credentials.json', '.claude/settings.json',
+    'id_ecdsa', 'id_dsa', 'id_rsa', 'id_ed25519', 'service-account.json', 'service_account.json',
+    '.raytrace/viewer-token', '.raytace/secret', '.secret_key', '.secrets.json', '.htpasswd',
+  ];
+  for (const file of secretFiles) {
+    assert.equal(packable(file), false, `Should exclude secret file: ${file}`);
+  }
+  assert.equal(packable('src/index.ts'), true);
+  assert.equal(packable('package.json'), true);
+  assert.equal(packable('components/Button.tsx'), true);
 });
 

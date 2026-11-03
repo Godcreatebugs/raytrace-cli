@@ -31,16 +31,23 @@ const ID = /^rtp-[a-f0-9]{32}$/;
 
 // Never packed: version control, dependencies and build output (rebuilt in the
 // sandbox), and files that usually hold credentials.
-const EXCLUDED = new Set(['.git', '.raytace', '.raytrace', '.ssh', '.aws', '.azure', '.config', 'node_modules', '.venv',
+const EXCLUDED = new Set(['.git', '.raytace', '.raytrace', '.ssh', '.aws', '.azure', '.config', '.claude', 'node_modules', '.venv',
   '__pycache__', '.next', '.vinext', 'dist', 'coverage', '.wrangler', '.DS_Store']);
-const SECRET_NAMES = new Set(['.npmrc', '.netrc', '.pypirc', 'credentials', 'auth.json', 'id_rsa', 'id_ed25519']);
+const SECRET_NAMES = new Set([
+  '.npmrc', '.netrc', '.pypirc', '.htpasswd', '.dockercfg', 'credentials', 'credentials.json', 'credentials.ini',
+  'auth.json', 'service-account.json', 'service_account.json', 'serviceAccountKey.json',
+  'client_secret.json', 'client_secrets.json', 'token.json', 'id_rsa', 'id_dsa', 'id_ecdsa',
+  'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk', 'known_hosts',
+]);
 const SECRET_EXTENSIONS = /\.(pem|key|p12|pfx)$/i;
 
 export function packable(path) {
   const parts = path.split('/');
   const name = parts.at(-1);
+  const lower = name.toLowerCase();
   return !parts.some((part) => EXCLUDED.has(part) || part === '..') && !path.startsWith('/')
-    && !name.startsWith('.env') && !SECRET_EXTENSIONS.test(name) && !SECRET_NAMES.has(name);
+    && !lower.startsWith('.env') && !lower.startsWith('.secret')
+    && !SECRET_EXTENSIONS.test(name) && !SECRET_NAMES.has(lower);
 }
 
 /** The project's files git would track, minus what must not leave this machine. */
