@@ -9,11 +9,19 @@
 const MIB = 1024 * 1024;
 export const LIMITS = { file: 25 * MIB, total: 200 * MIB, files: 20_000, archive: 100 * MIB };
 
-const EXCLUDED = new Set(['.git', '.raytace', '.raytrace', '.ssh', '.aws', '.azure', '.config', 'node_modules', '.venv',
+const EXCLUDED = new Set(['.git', '.raytace', '.raytrace', '.ssh', '.aws', '.azure', '.config', '.claude', 'node_modules', '.venv',
   '__pycache__', '.next', '.vinext', 'dist', 'coverage', '.wrangler', '.DS_Store']);
-const SECRET_NAMES = new Set(['.npmrc', '.netrc', '.pypirc', 'credentials', 'auth.json', 'id_rsa', 'id_ed25519']);
+const SECRET_NAMES = new Set([
+  '.npmrc', '.netrc', '.pypirc', '.htpasswd', '.dockercfg', 'credentials', 'credentials.json', 'credentials.ini',
+  'auth.json', 'service-account.json', 'service_account.json', 'serviceAccountKey.json',
+  'client_secret.json', 'client_secrets.json', 'token.json', 'id_rsa', 'id_dsa', 'id_ecdsa',
+  'id_ed25519', 'id_ecdsa_sk', 'id_ed25519_sk', 'known_hosts',
+]);
 const SECRET_EXTENSIONS = /\.(pem|key|p12|pfx)$/i;
-const secret = (name: string) => name.startsWith('.env') || SECRET_EXTENSIONS.test(name) || SECRET_NAMES.has(name);
+const secret = (name: string) => {
+  const lower = name.toLowerCase();
+  return lower.startsWith('.env') || lower.startsWith('.secret') || SECRET_EXTENSIONS.test(name) || SECRET_NAMES.has(lower);
+};
 
 export type Picked = { path: string; file: File };
 export type Project = {
