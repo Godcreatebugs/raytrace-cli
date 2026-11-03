@@ -43,7 +43,7 @@ const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
   : (routing.models.oss || routing.defaultModel);
 // Bumped whenever the dashboard needs endpoints an older proxy lacks; the
 // CLI restarts a proxy it started that reports less (src/proxy-process.mjs).
-const PROXY_API = 4;
+const PROXY_API = 5;
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
@@ -156,8 +156,8 @@ async function persistExperiment(job) { db.saveExperiment(redact(omitToolChunkId
 // so a poll with nothing new is answered 304 without sending anything.
 /** The trace view over this proxy's store; a replay is offered for exchanges
  * still held in memory (liveExchanges). */
-function readTraces(includeHistory = false, { evidence = true } = {}) {
-  return traceView(db, { includeHistory, evidence, replayReason: (spanId) => {
+function readTraces(includeHistory = false, { evidence = true, turnId = null } = {}) {
+  return traceView(db, { includeHistory, evidence, turnId, replayReason: (spanId) => {
     const live = liveExchanges.get(spanId);
     return live ? replayEligibility(live) : undefined;
   } });
@@ -169,7 +169,7 @@ const traceCache = new Map(); // url -> { version, body: Promise<string> }
 const resolveCategories = categoryResolver({ config: typesafe, ask: (request) => systemOne(typesafe, request) });
 let categoryAnswers = 0;
 function cachedTraces(url) {
-  const version = `${db.dataVersion()}:${categoryAnswers}`;
+  const version = `${db.dataVersion()}:${categoryAnswers}:${Math.floor(Date.now()/5000)}`;
   const hit = traceCache.get(url);
   if (hit?.version === version) return hit;
   const body = readTraces(url !== '/raytace/traces', { evidence: url !== '/raytace/traces?scope=history' })
@@ -476,6 +476,12 @@ const server = createServer(async (req, res) => {
       return res.end(await feed.text());
     } catch { return json(503, { error: NO_VM }); }
   }
+  if(req.method==='GET' && req.url?.startsWith('/raytace/traces?') && new URL(req.url,'http://local').searchParams.has('trace')) {
+    const id=new URL(req.url,'http://local').searchParams.get('trace');
+    if(!/^[A-Za-z0-9_.:-]{1,160}$/.test(id??'')) return json(400,{error:'Invalid trace'});
+    const traces=await readTraces(true,{evidence:true,turnId:id});
+    return json(traces.length?200:404,{traces});
+  }
   if (req.method === 'GET' && req.url?.startsWith('/raytace/runtime?')) {
     const query = new URL(req.url, 'http://localhost').searchParams;
     const sandbox = query.get('sandbox');
@@ -498,7 +504,7 @@ const server = createServer(async (req, res) => {
       const evidence = await fromViewer(`${EVIDENCE_VIEWER}/events?container=${project.container_id}&before=${before}${window}&limit=${limit}&processes=1`, { signal: AbortSignal.timeout(10000) });
       if (!evidence.ok) throw new Error('Runtime collector unavailable');
       const page = await evidence.json();
-      const base = { ...page, sandbox, container_id: project.container_id };
+      const base = { ...page, sandbox, container_id: project.container_id, captureHealth:db.captureHealth(sandbox,{since:Number(since)||undefined,until:Number(until)||Date.now()}) };
       // `raw=1` is the "show everything" escape hatch: the folded view must
       // always be auditable against what the collector actually recorded.
       if (raw) return json(200, base);
@@ -906,6 +912,9 @@ server.listen(port, '127.0.0.1', () => {
 // once and idles. RAYTACE_GVISOR_FORWARDER=0 turns it off entirely.
 const gvisorForwarder = process.env.RAYTACE_GVISOR_FORWARDER === '0' ? null : startGvisorForwarder({
   listProjects: () => sandboxes.list(),
+  recordCapture: row => db.recordCaptureEvent(row),
+  loadCheckpoint: (container,source) => db.captureCheckpoint(container,source),
+  saveProgress: row => db.saveCaptureProgress(row),
   viewerBase: EVIDENCE_VIEWER,
   fetchImpl: fromViewer,
   ingest: (events, { sessionId }) => ingestExecutions(db, events, { sessionId }),
