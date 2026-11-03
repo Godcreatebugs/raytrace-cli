@@ -1,4 +1,6 @@
 'use client';
+import {CaptureHealthStatus} from './capture-health';
+import type {CaptureHealth} from './types';
 import { useEffect, useState } from 'react';
 import { api } from './api';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -55,7 +57,7 @@ export type CallLabels = {
 };
 type Folded = { preamble: number; machinery: number; reexec: number; exits: number; preambleChars: number };
 type RawEvent = { event_id: number; kind: string; timestamp_ns?: string; pid?: number; ppid?: number; argv?: string[]; exit_code?: number | null; errno?: number };
-export type RuntimePage = { commands?: Command[]; folded?: Folded; events?: RawEvent[]; gaps: number; error?: string;
+export type RuntimePage = { captureHealth?:CaptureHealth; commands?: Command[]; folded?: Folded; events?: RawEvent[]; gaps: number; error?: string;
   call_labels?: Record<string, CallLabels>; severity_source?: 'jev' | 'rules' };
 
 /** The most severe top-level command each call ran, keyed by call id. */
@@ -320,7 +322,7 @@ export function RuntimeEvidence({ sandboxId, prompt, runtime, open, onOpenChange
           Folded: {foldedSummary(data.folded)}.{' '}
           <button type="button" className="link-button" onClick={() => setRaw(true)}>Show every event</button>
         </p>}
-        <p className="chain-note">Collector-wide gaps/errors: {data.gaps}. Missing evidence is not proof of non-execution.</p>
+        <CaptureHealthStatus health={data.captureHealth}/>
       </>}
     </>}
   </details>;

@@ -1,4 +1,5 @@
 'use client';
+import {CaptureHealthStatus} from './capture-health';
 
 // Prompts: what was asked and what came back. Everything about how the agent
 // got there lives in Tool calls and Sandbox, one click away.
@@ -61,7 +62,7 @@ export function PromptsView({ traces, loaded = true, box = '', onBox, selectedId
             <small>{trace.model} · {calls} tool call{calls === 1 ? '' : 's'} · {money(cost, trace.requests?.some((r) => r.costEstimated))}</small>
           </button>
           {open && <div className="rt-prompt-detail">
-            <h3>Prompt</h3>
+            <CaptureHealthStatus health={trace.captureHealth}/><h3>Prompt</h3>
             <p className="rt-text">{trace.title}</p>
             <h3>Answer</h3>
             {trace.answer ? <p className="rt-text">{trace.answer}</p> : <p className="rt-muted">No final answer was captured for this prompt.</p>}
