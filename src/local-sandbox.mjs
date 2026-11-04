@@ -216,15 +216,27 @@ export async function create(name, { root, files, skipped, total, archive }) {
   say(`Open it:  raytrace connect ${name}`);
 }
 
-export async function list() {
+/** This machine's local sandboxes with their state: running, stopped, or
+ * missing (in the registry, gone from the VM). `vmRunning` says whether the
+ * states were read from the VM; when it is not running, all are stopped. */
+export function localSandboxes() {
   const boxes = registry();
-  if (!Object.keys(boxes).length) { say('No local sandboxes. Create one from a Git repository: raytrace sandbox create --local'); return; }
-  const running = vmStatus() === 'Running';
+  if (!Object.keys(boxes).length) return { vmRunning: false, sandboxes: [] };
+  let running = false;
+  try { running = vmStatus() === 'Running'; } catch { /* no Lima: nothing can be running */ }
   const states = running ? Object.fromEntries(JSON.parse(projects(['list']).stdout || '[]').map((box) => [box.id, box.status])) : {};
-  for (const [id, box] of Object.entries(boxes)) {
+  const sandboxes = Object.entries(boxes).map(([id, { token, ...box }]) => ({
+    id, ...box, status: running ? (states[id] === 'running' ? 'running' : states[id] ? 'stopped' : 'missing') : 'stopped',
+  }));
+  return { vmRunning: running, sandboxes };
+}
+
+export async function list() {
+  const { vmRunning: running, sandboxes } = localSandboxes();
+  if (!sandboxes.length) { say('No local sandboxes. Create one from a Git repository: raytrace sandbox create --local'); return; }
+  for (const box of sandboxes) {
     const age = Math.round((Date.now() - Date.parse(box.created)) / 60000);
-    const status = running ? (states[id] === 'running' ? 'running' : states[id] ? 'stopped' : 'missing') : 'stopped';
-    say(`${box.name.padEnd(20)}  ${status.padEnd(8)}  ${id}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old, local)`);
+    say(`${box.name.padEnd(20)}  ${box.status.padEnd(8)}  ${box.id}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old, local)`);
   }
   if (!running) say(`\nThe RayTrace VM is stopped; \`raytrace sandbox start <name>\` starts it.`);
 }

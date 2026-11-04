@@ -86,9 +86,10 @@ Cloud sandboxes are a preview and may change; please
 ## Use from your editor (MCP)
 
 `raytrace mcp` is an [MCP](https://modelcontextprotocol.io) server, so the agent
-in VS Code, Cursor, Claude Code or any MCP client can create and manage cloud
-sandboxes for you: "put this project in a sandbox", "stop my sandbox",
-"destroy rtp-…". Nothing to install first; `npx` fetches the CLI.
+in VS Code, Cursor, Claude Code or any MCP client can create and manage
+sandboxes for you, in the cloud or on your machine: "put this project in a
+sandbox", "connect this repo to a local sandbox", "stop my sandbox". Nothing to
+install first; `npx` fetches the CLI.
 
 - **Claude Code:** `claude mcp add raytrace -- npx -y @raytrace-cli/cli mcp`
 - **VS Code** (`.vscode/mcp.json`):
@@ -119,7 +120,21 @@ started. What a command prints comes from your project, so the agent is told to
 treat it as data, not as instructions. This needs a RayTrace server with the
 command API; on one without it the tools say so, and you can still run
 `raytrace connect <id>` yourself in a terminal (it needs a real terminal, which
-an agent's own shell does not have). Local sandboxes stay terminal-only for now.
+an agent's own shell does not have). Running commands works on cloud sandboxes
+only.
+
+**Local sandboxes from the chat.** Ask for a local sandbox and the agent calls
+`create_sandbox` with `local: true`: the same as `raytrace sandbox create --local`
+in the project, so nothing is uploaded and no RayTrace sign-in is needed. If Lima
+is not installed, the agent asks you before downloading it (`install_lima`). The
+first local sandbox sets up the Linux VM, which takes several minutes: the agent
+gets an answer after about a minute and follows the rest with `sandbox_status`,
+and the setup carries on even if the chat ends. `list_sandboxes` shows local and
+cloud sandboxes together; `start_sandbox`, `stop_sandbox`, `sandbox_status` and
+`destroy_sandbox` take a local sandbox's name. Destroying one archives its
+captured logs to `~/.raytrace/archive` unless the agent passes `delete_logs`
+(`upload_first` uploads its evidences to the cloud before). To work in it, run
+`raytrace connect <name>` in a terminal, then `claude`.
 
 ## Local sandboxes
 
