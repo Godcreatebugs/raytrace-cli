@@ -125,13 +125,16 @@ export async function accessToken() {
 
 // ------------------------------------------------------------- commands
 
-function openUrl(url) {
+export function openUrl(url) {
   const [command, args] = process.platform === 'darwin' ? ['open', [url]]
     : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
   spawn(command, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
 }
 
-export async function login() {
+/** Start WorkOS's device login. Returns the code and page to show at once;
+ * `done` settles when the code is approved (the session is then saved),
+ * declined, or expired. */
+export async function startDeviceLogin() {
   const start = await workos('/authorize/device', { client_id: CLIENT_ID });
   if (start.status !== 200 || !start.data.device_code) {
     throw new Error(`WorkOS refused to start the sign-in: ${start.data.error_description || start.data.message || `HTTP ${start.status}`}`);
@@ -139,29 +142,34 @@ export async function login() {
   const { device_code, user_code, verification_uri, verification_uri_complete } = start.data;
   let interval = (start.data.interval || 5) * 1000;
   const deadline = Date.now() + (start.data.expires_in || 300) * 1000;
+  const done = (async () => {
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, interval));
+      const { status, data } = await workos('/authenticate', {
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code, client_id: CLIENT_ID,
+        device_id: hostname().slice(0, 100),
+      });
+      if (status === 200 && data.access_token) return { email: data.user?.email, where: save(keep(data)) };
+      if (data.error === 'authorization_pending') continue;
+      if (data.error === 'slow_down') { interval += 5000; continue; }
+      if (data.error === 'access_denied') throw new Error('The sign-in was declined.');
+      if (data.error === 'expired_token') break;
+      throw new Error(`Sign-in failed: ${data.error_description || data.error || `HTTP ${status}`}`);
+    }
+    throw new Error('The code expired before it was approved. Run raytrace auth login again.');
+  })();
+  return { user_code, verification_uri, verification_uri_complete, done };
+}
+
+export async function login() {
+  const { user_code, verification_uri, verification_uri_complete, done } = await startDeviceLogin();
   say(`Your sign-in code: ${user_code}`);
   say(`Opening ${verification_uri}: sign in, or create your account, and approve the code`);
   say('(or open it yourself on any device).');
   openUrl(verification_uri_complete || verification_uri);
   say('Waiting for approval...');
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, interval));
-    const { status, data } = await workos('/authenticate', {
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code, client_id: CLIENT_ID,
-      device_id: hostname().slice(0, 100),
-    });
-    if (status === 200 && data.access_token) {
-      const where = save(keep(data));
-      say(`\nSigned in as ${data.user?.email}. Your sign-in is kept in ${where}.`);
-      return;
-    }
-    if (data.error === 'authorization_pending') continue;
-    if (data.error === 'slow_down') { interval += 5000; continue; }
-    if (data.error === 'access_denied') throw new Error('The sign-in was declined.');
-    if (data.error === 'expired_token') break;
-    throw new Error(`Sign-in failed: ${data.error_description || data.error || `HTTP ${status}`}`);
-  }
-  throw new Error('The code expired before it was approved. Run raytrace auth login again.');
+  const { email, where } = await done;
+  say(`\nSigned in as ${email}. Your sign-in is kept in ${where}.`);
 }
 
 /** `raytrace auth login`: sign in, then say what comes next. */

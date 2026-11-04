@@ -4,6 +4,7 @@
 
 [ npm package ](https://www.npmjs.com/package/@raytrace-cli/cli) ·
 [ Quick start ](#quick-start) · [ Cloud sandboxes ](#cloud-sandboxes-preview) ·
+[ Editor (MCP) ](#use-from-your-editor-mcp) ·
 [ Local sandboxes ](#local-sandboxes) ·
 [ Privacy ](#privacy) · [ Report an issue ](https://github.com/Godcreatebugs/raytrace-cli/issues)
 
@@ -81,6 +82,33 @@ which one the CLI is using.
 
 Cloud sandboxes are a preview and may change; please
 [report issues](https://github.com/Godcreatebugs/raytrace-cli/issues) you run into.
+
+## Use from your editor (MCP)
+
+`raytrace mcp` is an [MCP](https://modelcontextprotocol.io) server, so the agent
+in VS Code, Cursor, Claude Code or any MCP client can create and manage cloud
+sandboxes for you: "put this project in a sandbox", "stop my sandbox",
+"destroy rtp-…". Nothing to install first; `npx` fetches the CLI.
+
+- **Claude Code:** `claude mcp add raytrace -- npx -y @raytrace-cli/cli mcp`
+- **VS Code** (`.vscode/mcp.json`):
+  ```json
+  { "servers": { "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli", "mcp"] } } }
+  ```
+- **Cursor** (`~/.cursor/mcp.json`) and most other clients:
+  ```json
+  { "mcpServers": { "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli", "mcp"] } } }
+  ```
+
+Tools: `login`, `create_sandbox`, `list_sandboxes`, `sandbox_status`,
+`start_sandbox`, `stop_sandbox`, `destroy_sandbox`. The first time, the agent
+calls `login` and shows you a code to approve in the browser; it is the same
+sign-in as `raytrace auth login`. `create_sandbox` uploads the Git project open
+in your editor, with the same rules and limits as `raytrace sandbox create`.
+`destroy_sandbox` deletes the sandbox's traces too unless the agent passes
+`keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does. To work
+inside a sandbox, run `raytrace connect <id>` in a terminal. Local sandboxes
+stay terminal-only for now.
 
 ## Local sandboxes
 
@@ -185,6 +213,7 @@ raytrace key              # which keys are set
 | `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
 | `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
 | `raytrace auth login` | sign in to RayTrace; `status`, `logout` |
+| `raytrace mcp` | MCP server on stdio for your editor's agent; see [Use from your editor](#use-from-your-editor-mcp) |
 | `raytrace --code <code>` | beta invite: redeem a code RayTrace gave you (signed in first) for one $10-credit sandbox; codes are single-use, are deleted on redemption, and expire after 3 days, as does the credit |
 | `raytrace sandbox create --local [--name <name>]` | the same sandbox in a Linux VM on this machine; offers to download Lima if needed (`--yes` skips the question) |
 | `raytrace sandbox list --local` | your local sandboxes; their names work with `connect`, `start`, `stop` and `destroy` |

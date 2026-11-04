@@ -89,70 +89,105 @@ function pack(root, files) {
   });
 }
 
+/** The signed-in workspace's cloud sandboxes, minus deleted ones. */
+export async function liveSandboxes() {
+  return (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
+}
+
+export function checkId(id) {
+  if (!ID.test(id)) throw new Error(`Not a sandbox id: ${id}`);
+  return id;
+}
+
 async function pickId(id) {
-  if (id) {
-    if (!ID.test(id)) throw new Error(`Not a sandbox id: ${id}`);
-    return id;
-  }
-  const live = (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
+  if (id) return checkId(id);
+  const live = await liveSandboxes();
   if (live.length === 1) return live[0].id;
   throw new Error(live.length ? 'More than one sandbox; name one (raytrace sandbox list).'
     : `No sandboxes${account() ? ` in ${account()}'s workspace` : ''} yet: raytrace sandbox create`);
 }
 
+/** The top of the Git repository holding `dir`, or null. */
+export function repoRoot(dir = process.cwd()) {
+  const top = spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+  return top.status === 0 ? top.stdout.trim() : null;
+}
+
+/** The files of the repository at `root` that may be uploaded, checked against the limits. */
+export function listProject(root) {
+  const project = projectFiles(root);
+  if (!project.files.length) throw new Error('Nothing to upload.');
+  return project;
+}
+
+/** Pack listed files into the gzip archive a sandbox is created from. */
+export async function packArchive(root, files) {
+  const archive = await pack(root, files);
+  if (archive.length > MAX_ARCHIVE) throw new Error(`The packed project is ${Math.round(archive.length / MIB)} MiB; the most is ${MAX_ARCHIVE / MIB} MiB.`);
+  return archive;
+}
+
+/** What beta credit does for the next cloud sandbox: 'use' it, it has
+ * 'expired' (unused, past its hard 3 days), or 'none'. Credit is consumed by
+ * the first cloud sandbox created after redemption. An older backend (or no
+ * entitlement) never blocks a plain one, so no answer means 'none'; the
+ * create call surfaces any real auth/network failure. */
+export async function creditPlan() {
+  let beta;
+  try { beta = await betaStatus(); } catch { return { plan: 'none', beta: null }; }
+  const deadlinePassed = beta?.credit_expires_at && Date.parse(beta.credit_expires_at) <= Date.now();
+  if (beta && !beta.sandbox_consumed && deadlinePassed && (beta.entitled || beta.credit_usd)) return { plan: 'expired', beta };
+  if (beta?.entitled && !beta.sandbox_consumed) return { plan: 'use', beta };
+  return { plan: 'none', beta };
+}
+
+/** Create a cloud sandbox from a packed project. A credit refusal comes back
+ * as an ApiError (see isCreditRefusal) for the caller to decide on. */
+export function upload(archive, name, useCredit) {
+  const headers = { 'content-type': 'application/gzip', 'x-raytrace-name': name.replace(/[^A-Za-z0-9._ -]/g, '-').slice(0, 100) };
+  return call('POST', '/v1/sandboxes', { body: archive, headers: useCredit ? { ...headers, 'x-raytrace-beta-credit': '1' } : headers });
+}
+
+/** The API refused the credit: 409 already used on another sandbox, 410 expired. */
+export const isCreditRefusal = (error) => error instanceof ApiError && [409, 410].includes(error.status);
+
 export async function create(flags) {
-  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-  if (top.status !== 0) throw new Error('Run this from inside a Git repository.');
-  const root = top.stdout.trim();
+  const root = repoRoot();
+  if (!root) throw new Error('Run this from inside a Git repository.');
   const name = flags.name || basename(root);
   // What the machine lacks is said before the project is read, and Lima fetched if agreed.
   const localName = flags.local ? local.sandboxName(flags, root) : null;
   if (flags.local) await local.preflight(flags, { confirm, interactive });
-  const { files, skipped, total } = projectFiles(root);
-  if (!files.length) throw new Error('Nothing to upload.');
+  const { files, skipped, total } = listProject(root);
   // The same files, packed the same way, as a cloud sandbox gets: only the copy stays here.
   if (flags.local) return local.create(localName, { root, files, skipped, total, archive: await pack(root, files) });
 
-  // Beta credit: consumed by the first cloud sandbox created after
-  // redemption, only before its hard 3-day deadline. A local sandbox never
-  // uses it; an older backend (or no entitlement) never blocks a plain one.
-  let useCredit = false;
-  try {
-    const beta = await betaStatus();
-    const deadlinePassed = beta?.credit_expires_at && Date.parse(beta.credit_expires_at) <= Date.now();
-    if (beta && !beta.sandbox_consumed && deadlinePassed && (beta.entitled || beta.credit_usd)) {
-      say('Your $10 beta credit has expired: the 3 days ran out, and unused credit does not carry over.');
-      if (!interactive()) throw new Error('Beta credit expired; no sandbox was created. Ask RayTrace for a new code to try again.');
-      if (!(await confirm('Create a plain sandbox without beta credit?', false))) { say('Not created.'); return; }
-    } else if (beta?.entitled && !beta.sandbox_consumed) {
-      useCredit = true;
-      say(`Using your $${beta.credit_usd ?? 10} beta credit (OpenRouter) on this sandbox`
-        + `${beta.credit_expires_at ? ` — credit ends ${formatCreditDeadline(beta.credit_expires_at)}` : ''}.`);
-    }
-  } catch (error) {
-    if (/Beta credit expired/.test(error.message)) throw error;
-    // No beta answer (old backend, signed out, unreachable): proceed plain;
-    // the create call below surfaces any real auth/network failure.
+  // A local sandbox never uses beta credit.
+  const { plan, beta } = await creditPlan();
+  if (plan === 'expired') {
+    say('Your $10 beta credit has expired: the 3 days ran out, and unused credit does not carry over.');
+    if (!interactive()) throw new Error('Beta credit expired; no sandbox was created. Ask RayTrace for a new code to try again.');
+    if (!(await confirm('Create a plain sandbox without beta credit?', false))) { say('Not created.'); return; }
+  } else if (plan === 'use') {
+    say(`Using your $${beta.credit_usd ?? 10} beta credit (OpenRouter) on this sandbox`
+      + `${beta.credit_expires_at ? ` — credit ends ${formatCreditDeadline(beta.credit_expires_at)}` : ''}.`);
   }
+  const useCredit = plan === 'use';
   say(`Packing ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root}`);
   if (skipped.length) say(`Not uploaded (${skipped.length}): ${skipped.slice(0, 8).join(', ')}${skipped.length > 8 ? ', ...' : ''}`);
-  const archive = await pack(root, files);
-  if (archive.length > MAX_ARCHIVE) throw new Error(`The packed project is ${Math.round(archive.length / MIB)} MiB; the most is ${MAX_ARCHIVE / MIB} MiB.`);
+  const archive = await packArchive(root, files);
   say('Creating the sandbox (the first one on a host takes a little longer)...');
-  const headers = { 'content-type': 'application/gzip', 'x-raytrace-name': name.replace(/[^A-Za-z0-9._ -]/g, '-').slice(0, 100) };
   let box;
   try {
-    box = await call('POST', '/v1/sandboxes', {
-      body: archive, headers: useCredit ? { ...headers, 'x-raytrace-beta-credit': '1' } : headers,
-    });
+    box = await upload(archive, name, useCredit);
   } catch (error) {
-    if (!useCredit || !(error instanceof ApiError) || ![409, 410].includes(error.status)) throw error;
+    if (!useCredit || !isCreditRefusal(error)) throw error;
     say(error.status === 410 ? 'Your beta credit expired before the sandbox was created.'
       : 'Your beta credit was already used on another sandbox.');
     if (!interactive() || !(await confirm('Create a plain sandbox without beta credit?', false))) {
       throw new Error('Beta credit not applied; no sandbox was created.');
     }
-    box = await call('POST', '/v1/sandboxes', { body: archive, headers });
+    box = await upload(archive, name, false);
   }
   say(`\nSandbox ${box.id} is running.`);
   if (box.credit_applied) {
@@ -165,7 +200,7 @@ export async function create(flags) {
 
 export async function list(flags = {}) {
   if (flags.local) return local.list();
-  const boxes = (await call('GET', '/v1/sandboxes')).filter((box) => box.status !== 'deleted');
+  const boxes = await liveSandboxes();
   if (!boxes.length) { say('No sandboxes. Create one from a Git repository: raytrace sandbox create'); return; }
   for (const box of boxes) {
     // The sandbox's creation time (seconds), or its container's once that is known.
