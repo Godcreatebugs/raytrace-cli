@@ -25,6 +25,11 @@ Cloud sandboxes:
   raytrace sandbox destroy [id] [--yes] [--keep-traces]
                                             delete it; traces go too unless --keep-traces (paid plans)
 
+Use from your editor's agent (VS Code, Cursor, Claude Code, any MCP client):
+  raytrace mcp                              MCP server on stdio: sign in, create, list, start,
+                                            stop and destroy cloud sandboxes. Add it to your
+                                            editor as the command: npx -y @raytrace-cli/cli mcp
+
 Local sandboxes (your project stays on this machine):
   raytrace sandbox create --local [--name <name>] [--yes]
                                             a copy of this Git repository in a gVisor sandbox
@@ -79,6 +84,14 @@ if (command === '--version' || command === '-v') {
   console.log(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
   process.exit(0);
 }
+// `raytrace mcp`: stdout belongs to the MCP protocol, so nothing else may run first.
+if (command === 'mcp') {
+  if (rest.length) { console.error('Usage: raytrace mcp'); process.exit(2); }
+  const { serve } = await import('../src/mcp.mjs');
+  await serve();
+  process.exit(0);
+}
+
 if (!command || command === 'help' || command === '--help' || command === '-h') { console.log(HELP); process.exit(0); }
 
 // `raytrace --code <code>` (also `raytrace code <code>`): redeem a beta code.
