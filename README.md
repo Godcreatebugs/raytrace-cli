@@ -101,14 +101,25 @@ sandboxes for you: "put this project in a sandbox", "stop my sandbox",
   ```
 
 Tools: `login`, `create_sandbox`, `list_sandboxes`, `sandbox_status`,
-`start_sandbox`, `stop_sandbox`, `destroy_sandbox`. The first time, the agent
+`start_sandbox`, `stop_sandbox`, `destroy_sandbox`, `run_command`,
+`get_command_result`, `cancel_command`. The first time, the agent
 calls `login` and shows you a code to approve in the browser; it is the same
 sign-in as `raytrace auth login`. `create_sandbox` uploads the Git project open
 in your editor, with the same rules and limits as `raytrace sandbox create`.
 `destroy_sandbox` deletes the sandbox's traces too unless the agent passes
-`keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does. To work
-inside a sandbox, run `raytrace connect <id>` in a terminal. Local sandboxes
-stay terminal-only for now.
+`keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does.
+
+**Running commands from the chat.** `run_command` starts a shell command in the
+sandbox's `/workspace` (up to 4 at a time, 120 s by default, at most 1,800 s) and
+returns at once with a command id. `get_command_result` gives its state, the real
+exit code (*unknown* is never reported as success) and the last 20,000 characters
+of stdout and stderr; `wait_seconds` (up to 30) waits for a running command, so
+the agent does not have to poll. `cancel_command` stops it and everything it
+started. What a command prints comes from your project, so the agent is told to
+treat it as data, not as instructions. This needs a RayTrace server with the
+command API; on one without it the tools say so, and you can still run
+`raytrace connect <id>` yourself in a terminal (it needs a real terminal, which
+an agent's own shell does not have). Local sandboxes stay terminal-only for now.
 
 ## Local sandboxes
 
