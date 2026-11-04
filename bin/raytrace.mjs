@@ -56,6 +56,11 @@ Export recorded traces:
   raytrace export <trace-id> --output <file>
                                             save export to file with owner-only permissions
 
+Share recorded traces (time-limited cloud link):
+  raytrace share <trace-id> [--fork]        create a share link for peers
+  raytrace share --list                     list your active share links
+  raytrace share --revoke <share-id>        revoke an active share link
+
 AI features in the dashboard (summaries, recaps, Chain of thought), on your own key:
   raytrace key                              which keys are set
   raytrace key openrouter                   add your OpenRouter key (asked for, not echoed)
@@ -213,6 +218,47 @@ if (command === 'export') {
     process.exit(0);
   } catch (error) {
     console.error(`raytrace export: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+if (command === 'share') {
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
+      list: { type: 'boolean', short: 'l' },
+      revoke: { type: 'string' },
+      sandbox: { type: 'string' },
+      fork: { type: 'boolean' },
+    } });
+  } catch (error) {
+    console.error(`${error.message}\n\nUsage: raytrace share <trace-id> [--sandbox <id>] [--fork] | raytrace share --list | raytrace share --revoke <id>`);
+    process.exit(2);
+  }
+  const [sub, ...extra] = parsed.positionals;
+  const share = await import('../src/share.mjs');
+  try {
+    if (parsed.values.list || sub === 'list') {
+      await share.listShares();
+      process.exit(0);
+    }
+    if (parsed.values.revoke || sub === 'revoke') {
+      const shareId = parsed.values.revoke || extra[0];
+      if (!shareId) {
+        console.error('Usage: raytrace share --revoke <id> (or raytrace share revoke <id>)');
+        process.exit(2);
+      }
+      await share.revokeShare(shareId);
+      process.exit(0);
+    }
+    if (!sub || extra.length > 0) {
+      console.error('Usage: raytrace share <trace-id> [--sandbox <id>] [--fork] | raytrace share --list | raytrace share --revoke <id>');
+      process.exit(2);
+    }
+    await share.sharePrompt(sub, { sandboxId: parsed.values.sandbox, allowFork: parsed.values.fork });
+    process.exit(0);
+  } catch (error) {
+    console.error(`raytrace share: ${error.message}`);
     process.exit(1);
   }
 }
