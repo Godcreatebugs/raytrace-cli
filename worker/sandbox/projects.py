@@ -109,10 +109,18 @@ def stage_archive(sid):
             out.write(chunk)
     return path
 
+# Codex the same: no approval prompts, and none of its own sandboxing, which
+# the sandbox already is (and gVisor would not let it set up).
+# What `shell --agent` starts: the agent's name and its command line.
+AGENTS = {'claude': ('Claude Code', 'claude --dangerously-skip-permissions'),
+          'codex': ('Codex', 'codex --dangerously-bypass-approvals-and-sandbox')}
+CODEX_MANAGED = b'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n'
+
 def install_claude_hooks(container, hook):
     """The hook script, root-owned, with Claude Code's managed settings, which
-    user and project settings cannot override: the agent can read both, not
-    change them. Re-running replaces them with the current version."""
+    user and project settings cannot override, and Codex's managed config: the
+    agent can read them, not change them. Re-running replaces them with the
+    current version."""
     if not 0 < len(hook) <= 262144:
         raise ValueError('Expected the hook script')
     command = 'node /opt/raytace-claude/hook.mjs'
@@ -129,8 +137,9 @@ def install_claude_hooks(container, hook):
     # Needs the container running. Files an older install left node-owned
     # are emptied by node, then their directories removed by root.
     subprocess.run(['docker', 'exec', '-u', '1000', container, 'sh', '-c',
-        'rm -rf /opt/raytace-claude/* /etc/claude-code/*'], stderr=subprocess.DEVNULL)
-    for path, content in (('/opt/raytace-claude/hook.mjs', hook), ('/etc/claude-code/managed-settings.json', settings)):
+        'rm -rf /opt/raytace-claude/* /etc/claude-code/* /etc/codex/*'], stderr=subprocess.DEVNULL)
+    for path, content in (('/opt/raytace-claude/hook.mjs', hook), ('/etc/claude-code/managed-settings.json', settings),
+                          ('/etc/codex/managed_config.toml', CODEX_MANAGED)):
         write_as_root(container, path, content)
 
 def write_as_root(container, path, content):
@@ -550,7 +559,7 @@ def main():
     parser.add_argument('--since', type=int, default=0, help='activity: from this epoch ms')
     parser.add_argument('--until', type=int, default=0, help='activity: up to this epoch ms')
     parser.add_argument('--forget-evidence', action='store_true', help='delete: also delete what the collector recorded for it')
-    parser.add_argument('--claude', action='store_true', help='shell: start Claude Code first; its exit leaves the shell')
+    parser.add_argument('--agent', choices=sorted(AGENTS), help='shell: start this agent first, without approval prompts; its exit leaves the shell')
     opts = parser.parse_args()
     if opts.action == 'list':
         ids = subprocess.check_output(['docker', 'ps', '-aq', '--filter', 'label='+LABEL], text=True).split()
@@ -649,8 +658,9 @@ def main():
             return
         # Exiting this shell or Codex never stops/removes the persistent container.
         start = 'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; '
-        if opts.claude:
-            start += 'cd /workspace 2>/dev/null; if command -v claude >/dev/null; then claude --dangerously-skip-permissions; else echo "Claude Code is not installed in this sandbox."; fi; '
+        if opts.agent:
+            name, line = AGENTS[opts.agent]
+            start += f'cd /workspace 2>/dev/null; if command -v {opts.agent} >/dev/null; then {line}; else echo "{name} is not installed in this sandbox."; fi; '
         proc = subprocess.run(['docker', 'exec', '-it', opts.id, '/bin/bash', '-c', start+'exec /bin/bash'], check=False)
         sys.exit(proc.returncode)
     elif opts.action == 'stop':

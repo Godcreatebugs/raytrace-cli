@@ -18,6 +18,7 @@ import { api, call, ApiError, unreachable } from './api.mjs';
 import { betaStatus, formatCreditDeadline } from './beta.mjs';
 import { ask, confirm, interactive } from './prompt.mjs';
 import * as local from './local-sandbox.mjs';
+import { AGENTS } from './agents.mjs';
 
 const say = (line = '') => console.log(line);
 // What one project upload may be. RayTrace's API holds the dashboard's folder
@@ -258,7 +259,7 @@ export function betaExpiryWarning(beta, id, now = Date.now()) {
 export async function shell(id, flags = {}) {
   if (!interactive()) throw new Error('Connecting to a sandbox needs a terminal.');
   // With no id and no cloud sign-in, the one local sandbox is the likely one.
-  if (flags.local || local.isLocal(id) || (!id && Object.keys(local.registry()).length && !account())) return local.shell(id, { claude: flags.claude });
+  if (flags.local || local.isLocal(id) || (!id && Object.keys(local.registry()).length && !account())) return local.shell(id, { agent: flags.agent });
   id = await pickId(id);
   try {
     const warning = betaExpiryWarning(await betaStatus(), id);
@@ -284,11 +285,12 @@ export async function shell(id, flags = {}) {
       });
     });
     req.on('upgrade', (_response, socket, head) => {
-      say(flags.claude ? `Connected to ${id}, starting Claude Code without permission prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.\n`
+      const agent = AGENTS[flags.agent];
+      say(agent ? `Connected to ${id}, starting ${agent.name} without approval prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.\n`
         : `Connected to ${id}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.\n`);
       if (head.length) stdout.write(head);
-      // The API's shell takes no command: Claude Code is started by typing it, which the terminal holds until the shell reads it.
-      if (flags.claude) socket.write('claude --dangerously-skip-permissions\r');
+      // The API's shell takes no command: the agent is started by typing it, which the terminal holds until the shell reads it.
+      if (agent) socket.write(`${agent.command}\r`);
       stdin.setRawMode(true);
       stdin.resume();
       stdin.pipe(socket);

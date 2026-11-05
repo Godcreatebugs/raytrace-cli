@@ -110,7 +110,7 @@ in your editor, with the same rules and limits as `raytrace sandbox create`.
 `destroy_sandbox` deletes the sandbox's traces too unless the agent passes
 `keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does.
 
-**Working in the sandbox with Claude Code.** After `create_sandbox`, a new
+**Working in the sandbox with Claude Code or Codex.** After `create_sandbox`, a new
 terminal opens connected to the sandbox with Claude Code starting in it, and the
 session you have there is recorded (`connect: false` skips this).
 `connect_sandbox` does the same for a sandbox you already have: "open my sandbox
@@ -119,11 +119,14 @@ window inside tmux, a new iTerm window or WezTerm tab; otherwise a new Terminal
 window on macOS (also from VS Code, whose built-in terminal cannot be opened from
 outside), the desktop's terminal on Linux, or Windows Terminal. macOS asks once
 whether your terminal may be controlled. If no terminal can be opened, the agent
-gives you the command: `raytrace connect <id or name> --claude`. Claude Code runs
-there with `--dangerously-skip-permissions`: it does not stop to ask before each
-command, because the sandbox is what contains it, and everything it does is
-recorded. Files the project's owner restricted stay locked. The first time in
-each sandbox, Claude Code asks you to sign in and to accept that mode.
+gives you the command: `raytrace connect <id or name> --claude`. Ask for Codex
+instead and it starts Codex (`--codex`). Either runs without approval prompts
+(Claude Code with `--dangerously-skip-permissions`, Codex with
+`--dangerously-bypass-approvals-and-sandbox`, and both by default in the
+sandbox's managed settings, so typing `claude` or `codex` there does the same):
+the sandbox is what contains them, and everything they run is recorded. Files
+the project's owner restricted stay locked. The first time in each sandbox, the
+agent asks you to sign in.
 
 **Running commands from the chat.** `run_command` starts a shell command in the
 sandbox's `/workspace` (up to 4 at a time, 120 s by default, at most 1,800 s) and
@@ -249,7 +252,7 @@ raytrace key              # which keys are set
 | Command | What it does |
 |---|---|
 | `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
-| `raytrace connect [id] [--claude]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`); `--claude` starts Claude Code in it |
+| `raytrace connect [id] [--claude\|--codex]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`); `--claude` or `--codex` starts that agent in it, without approval prompts |
 | `raytrace sandbox list` | your cloud sandboxes |
 | `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
 | `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
