@@ -14,13 +14,15 @@ function Results({ a,b }: {a: ComparisonTrace;b: ComparisonTrace}) {
   const exchanges=(t:ComparisonTrace)=>t.events.filter(e=>e.title==='Context assembled').map(e=>{try{return JSON.parse(e.raw).exchange_id as string;}catch{return '';}}).filter(Boolean);
   const ax=exchanges(a),bx=exchanges(b),ae=ax.includes(ai)?ai:ax[0]??'',be=bx.includes(bi)?bi:bx[0]??'';
   const difference=firstDifference(a,b), limits=comparisonLimits(a,b);
-  const failed=actions(b).findIndex(call=>(call.observedExit??call.reportedExit??0)!==0);
   const ma=metrics(a),mb=metrics(b); const aa=actions(a),bb=actions(b); const aligned=alignActions(aa,bb);
+  const failedIndex = bb.findIndex(call => call.reportedFailure || [call.observedExit, call.reportedExit].some(code => code != null && code !== 0));
+  const failedCall = bb[failedIndex];
   const format=(v:number|null,unit:string)=>v===null?'Unavailable':unit==='$'?`$${v.toFixed(6)}`:unit==='s'?`${(v/1000).toFixed(2)} s`:v.toLocaleString();
   const fields=[['cost','Reported cost','$'],['span','Elapsed time','s'],['time','Summed request time','s'],['input','Input tokens',''],['output','Output tokens',''],['calls','API calls',''],['tools','Proposed tool calls','']] as const;
   return <><section aria-label="First recorded difference"><h3>First recorded difference</h3>
     <p>{difference?.summary??'No difference found in the available recording.'}</p>
-    {failed>=0&&<p>Comparison run: a non-zero exit was recorded at tool call {failed+1}.</p>}
+    {failedCall && <section aria-label="Failed tool call"><h4>Failed tool call {failedIndex + 1}: {failedCall.name}</h4>
+      {failedCall.result ? <pre>{failedCall.result}</pre> : <p>No output was captured for this call.</p>}</section>}
     <p>This is the first recorded difference. It does not establish why the run failed.</p>
     <div className="compare-pair">{[a,b].map((trace,side)=><div key={trace.id}><CaptureHealthStatus health={trace.captureHealth}/>
       <a href={`?view=calls&trace=${encodeURIComponent(trace.id)}${(side?difference?.b:difference?.a)?.callId?`&call=${encodeURIComponent((side?difference?.b:difference?.a)!.callId!)}`:''}`}>Open {side?'comparison':'baseline'} evidence</a>

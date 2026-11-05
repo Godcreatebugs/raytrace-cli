@@ -69,17 +69,19 @@ export function contextText(trace: ComparisonTrace, exchange: string) {
   }).join('\n\n') || 'No context captured.';
 }
 
-/** Strip runner metadata, never arbitrary lines from the actual tool output. */
+// Only recognize metadata at the start. File contents and test logs can
+// themselves contain an "Output:" line or a quoted exit code.
+const runnerHeader = /^(?:Chunk ID: [^\r\n]+\r?\n)?(?:Wall time: [^\r\n]+\r?\n)?Process exited with code (-?\d+)(?:\r?\n(?:Original token count: \d+\r?\n)?(?:Final output|Output):\r?\n|$)/;
 function resultText(value:unknown):string {
   const text=typeof value==='string'?value:stable(value);
-  return text.replace(/^(?:Wall time: [^\n]*\n|Chunk ID: [^\n]*\n|Process exited with code \d+\n|Final output:\n|Output:\n)+/,'');
+  return text.replace(runnerHeader,'');
 }
 function reportedExit(raw:Record<string,unknown>):number|null {
   if(typeof raw.exit_code==='number') return raw.exit_code;
   const output=raw.output;
   if(output && typeof output==='object' && 'exit_code' in output && typeof output.exit_code==='number') return output.exit_code;
-  if(typeof output==='string') {const code=/^Process exited with code (\d+)$/m.exec(output);if(code)return Number(code[1]);}
-  return null;
+  const code = typeof output === 'string' && runnerHeader.exec(output);
+  return code ? Number(code[1]) : null;
 }
 export type Difference={kind:string;summary:string;a?:Action;b?:Action;step?:number;baselineEvidence?:unknown;comparisonEvidence?:unknown};
 export function firstDifference(a:ComparisonTrace,b:ComparisonTrace):Difference|null {

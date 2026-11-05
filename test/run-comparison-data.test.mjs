@@ -51,3 +51,11 @@ test('missing details and preview-only evidence are explicitly limited',()=>{
  const a=detailed('x',{captureComplete:false,evidence:[{id:'x',preview:'partial'}]});
  assert.ok(comparisonLimits(a,a).some(x=>x.includes('truncated')));assert.ok(comparisonLimits(a,a).some(x=>x.includes('preview')));
 });
+test('keeps quoted exit codes and header-like lines in the actual output',()=>{
+ const output='Output:\nexample\nProcess exited with code 1';
+ const [call]=actions(detailed(output));
+ assert.equal(call.reportedExit,null);
+ assert.equal(call.result,output);
+ const wrapped='Process exited with code 1\nOutput:\n'+output;
+ assert.equal(actions(detailed(wrapped))[0].result,output);
+});
