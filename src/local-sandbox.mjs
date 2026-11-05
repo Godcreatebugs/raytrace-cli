@@ -16,7 +16,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, 
 import { basename, join } from 'node:path';
 import { paths } from './paths.mjs';
 import { portInUse, runningPid, start as startProxy, stop as stopProxy } from './proxy-process.mjs';
-import { readConfig } from './config.mjs';
+import { portOf, readConfig } from './config.mjs';
 import { ensureToken } from '../proxy/local-token.mjs';
 import { viewerTokenFor } from '../proxy/request-policy.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
@@ -216,15 +216,27 @@ export async function create(name, { root, files, skipped, total, archive }) {
   say(`Open it:  raytrace connect ${name}`);
 }
 
-export async function list() {
+/** This machine's local sandboxes with their state: running, stopped, or
+ * missing (in the registry, gone from the VM). `vmRunning` says whether the
+ * states were read from the VM; when it is not running, all are stopped. */
+export function localSandboxes() {
   const boxes = registry();
-  if (!Object.keys(boxes).length) { say('No local sandboxes. Create one from a Git repository: raytrace sandbox create --local'); return; }
-  const running = vmStatus() === 'Running';
+  if (!Object.keys(boxes).length) return { vmRunning: false, sandboxes: [] };
+  let running = false;
+  try { running = vmStatus() === 'Running'; } catch { /* no Lima: nothing can be running */ }
   const states = running ? Object.fromEntries(JSON.parse(projects(['list']).stdout || '[]').map((box) => [box.id, box.status])) : {};
-  for (const [id, box] of Object.entries(boxes)) {
+  const sandboxes = Object.entries(boxes).map(([id, { token, ...box }]) => ({
+    id, ...box, status: running ? (states[id] === 'running' ? 'running' : states[id] ? 'stopped' : 'missing') : 'stopped',
+  }));
+  return { vmRunning: running, sandboxes };
+}
+
+export async function list() {
+  const { vmRunning: running, sandboxes } = localSandboxes();
+  if (!sandboxes.length) { say('No local sandboxes. Create one from a Git repository: raytrace sandbox create --local'); return; }
+  for (const box of sandboxes) {
     const age = Math.round((Date.now() - Date.parse(box.created)) / 60000);
-    const status = running ? (states[id] === 'running' ? 'running' : states[id] ? 'stopped' : 'missing') : 'stopped';
-    say(`${box.name.padEnd(20)}  ${status.padEnd(8)}  ${id}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old, local)`);
+    say(`${box.name.padEnd(20)}  ${box.status.padEnd(8)}  ${box.id}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old, local)`);
   }
   if (!running) say(`\nThe RayTrace VM is stopped; \`raytrace sandbox start <name>\` starts it.`);
 }
@@ -326,14 +338,20 @@ export async function destroy(ref, flags, { ask, interactive }) {
   if (deleteLogs && forks.length && runningPid()) { await stopProxy(); await startProxy(); }
 }
 
-/** A terminal in the sandbox, through the VM. Leaving it keeps the sandbox running. */
-export async function shell(id) {
+/** A terminal in the sandbox, through the VM; with `claude`, Claude Code
+ * starts in it first. Leaving it keeps the sandbox running. */
+/** The local dashboard's Prompts, only those that ran in this sandbox. */
+export const promptsLink = (id) => `http://127.0.0.1:${portOf(readConfig())}/?box=${encodeURIComponent(id)}`;
+
+export async function shell(id, { claude = false } = {}) {
   id = pickId(id);
   ensureVm();
   await ensureBridge();
   const { name } = registry()[id];
-  say(`Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
+  say(claude ? `Connected to ${name}, starting Claude Code without permission prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.`
+    : `Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
+  say(`Its prompts, and only its: ${promptsLink(id)}`);
   say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');
-  projects(['shell', id], { inherit: true, check: false });
+  projects(['shell', id, ...(claude ? ['--claude'] : [])], { inherit: true, check: false });
   say(`\nLeft ${name}. It is still running. Back in: raytrace connect ${name}   Stop it: raytrace sandbox stop ${name}`);
 }

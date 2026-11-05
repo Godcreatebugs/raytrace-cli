@@ -173,7 +173,8 @@ export function Dashboard({ views = VIEWS, offline = 'PROXY OFFLINE', footer = n
     </aside>
 
     {place.view === 'prompts' && shows('prompts') && <PromptsView traces={traces.filter((item) => !item.forkId)} loaded={loaded} selectedId={place.trace}
-      onSelect={(id) => go({ view: 'prompts', trace: id })}
+      box={place.box} onBox={(box) => go({ view: 'prompts', box })}
+      onSelect={(id) => go({ view: 'prompts', trace: id, box: place.box })}
       onOpen={(view, id) => go({ view, trace: id })} onOpenStep={(id, callId) => go({ view: 'calls', trace: id, call: callId })} canOpen={shows} />}
 
     {place.view === 'search' && shows('search') && <SearchView key={place.q} initialQuery={place.q}

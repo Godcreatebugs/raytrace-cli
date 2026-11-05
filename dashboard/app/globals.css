@@ -235,6 +235,7 @@ button.rt-cell:not(:disabled):hover,.rt-cell:focus-visible{outline:1px solid lig
 /* Prompt list */
 .rt-list-head{display:flex;justify-content:space-between;align-items:center;margin:22px 0 8px;font-size:11px;color:light-dark(#7a7d82,#96999d);letter-spacing:.08em;font-weight:700}
 .rt-list-head small{font-weight:400;letter-spacing:0}
+.rt-chips{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .rt-chip{display:inline-flex;gap:6px;align-items:center;border:1px solid light-dark(#caccd1,#4d535a);background:light-dark(#f0f1f2,#24272a);color:light-dark(#151619,#f2f3f4);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;letter-spacing:0}
 .rt-prompts{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .rt-prompt{border:1px solid light-dark(#e6e6e8,#313439);border-radius:9px;background:light-dark(#fcfcfc,#151719)}

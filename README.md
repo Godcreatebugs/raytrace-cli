@@ -86,9 +86,10 @@ Cloud sandboxes are a preview and may change; please
 ## Use from your editor (MCP)
 
 `raytrace mcp` is an [MCP](https://modelcontextprotocol.io) server, so the agent
-in VS Code, Cursor, Claude Code or any MCP client can create and manage cloud
-sandboxes for you: "put this project in a sandbox", "stop my sandbox",
-"destroy rtp-…". Nothing to install first; `npx` fetches the CLI.
+in VS Code, Cursor, Claude Code or any MCP client can create and manage
+sandboxes for you, in the cloud or on your machine: "put this project in a
+sandbox", "connect this repo to a local sandbox", "stop my sandbox". Nothing to
+install first; `npx` fetches the CLI.
 
 - **Claude Code:** `claude mcp add raytrace -- npx -y @raytrace-cli/cli mcp`
 - **VS Code** (`.vscode/mcp.json`):
@@ -109,6 +110,21 @@ in your editor, with the same rules and limits as `raytrace sandbox create`.
 `destroy_sandbox` deletes the sandbox's traces too unless the agent passes
 `keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does.
 
+**Working in the sandbox with Claude Code.** After `create_sandbox`, a new
+terminal opens connected to the sandbox with Claude Code starting in it, and the
+session you have there is recorded (`connect: false` skips this).
+`connect_sandbox` does the same for a sandbox you already have: "open my sandbox
+with Claude". The terminal opens where your agent runs when it can: a new tmux
+window inside tmux, a new iTerm window or WezTerm tab; otherwise a new Terminal
+window on macOS (also from VS Code, whose built-in terminal cannot be opened from
+outside), the desktop's terminal on Linux, or Windows Terminal. macOS asks once
+whether your terminal may be controlled. If no terminal can be opened, the agent
+gives you the command: `raytrace connect <id or name> --claude`. Claude Code runs
+there with `--dangerously-skip-permissions`: it does not stop to ask before each
+command, because the sandbox is what contains it, and everything it does is
+recorded. Files the project's owner restricted stay locked. The first time in
+each sandbox, Claude Code asks you to sign in and to accept that mode.
+
 **Running commands from the chat.** `run_command` starts a shell command in the
 sandbox's `/workspace` (up to 4 at a time, 120 s by default, at most 1,800 s) and
 returns at once with a command id. `get_command_result` gives its state, the real
@@ -119,7 +135,21 @@ started. What a command prints comes from your project, so the agent is told to
 treat it as data, not as instructions. This needs a RayTrace server with the
 command API; on one without it the tools say so, and you can still run
 `raytrace connect <id>` yourself in a terminal (it needs a real terminal, which
-an agent's own shell does not have). Local sandboxes stay terminal-only for now.
+an agent's own shell does not have). Running commands works on cloud sandboxes
+only.
+
+**Local sandboxes from the chat.** Ask for a local sandbox and the agent calls
+`create_sandbox` with `local: true`: the same as `raytrace sandbox create --local`
+in the project, so nothing is uploaded and no RayTrace sign-in is needed. If Lima
+is not installed, the agent asks you before downloading it (`install_lima`). The
+first local sandbox sets up the Linux VM, which takes several minutes: the agent
+gets an answer after about a minute and follows the rest with `sandbox_status`,
+and the setup carries on even if the chat ends. `list_sandboxes` shows local and
+cloud sandboxes together; `start_sandbox`, `stop_sandbox`, `sandbox_status` and
+`destroy_sandbox` and `connect_sandbox` take a local sandbox's name. Destroying one archives its
+captured logs to `~/.raytrace/archive` unless the agent passes `delete_logs`
+(`upload_first` uploads its evidences to the cloud before). To work in it, run
+`raytrace connect <name> --claude` in a terminal, or ask for `connect_sandbox`.
 
 ## Local sandboxes
 
@@ -219,7 +249,7 @@ raytrace key              # which keys are set
 | Command | What it does |
 |---|---|
 | `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
-| `raytrace connect [id]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`) |
+| `raytrace connect [id] [--claude]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`); `--claude` starts Claude Code in it |
 | `raytrace sandbox list` | your cloud sandboxes |
 | `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
 | `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
