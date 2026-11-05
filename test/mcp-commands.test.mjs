@@ -50,7 +50,7 @@ async function mcp(t, respond) {
 test('the command tools are listed with accurate hints, and the instructions send the agent to them, not to a terminal', async (t) => {
   const { rpc, init } = await mcp(t, () => [200, {}]);
   const tools = (await rpc('tools/list', {})).result.tools, byName = (name) => tools.find((x) => x.name === name);
-  assert.equal(tools.length, 10);
+  assert.equal(tools.length, 11);
   assert.equal(byName('run_command').annotations.readOnlyHint, false);
   assert.equal(byName('get_command_result').annotations.readOnlyHint, true);
   assert.equal(byName('cancel_command').annotations.readOnlyHint, false);

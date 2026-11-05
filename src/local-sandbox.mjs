@@ -16,7 +16,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, 
 import { basename, join } from 'node:path';
 import { paths } from './paths.mjs';
 import { portInUse, runningPid, start as startProxy, stop as stopProxy } from './proxy-process.mjs';
-import { readConfig } from './config.mjs';
+import { portOf, readConfig } from './config.mjs';
 import { ensureToken } from '../proxy/local-token.mjs';
 import { viewerTokenFor } from '../proxy/request-policy.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
@@ -338,14 +338,20 @@ export async function destroy(ref, flags, { ask, interactive }) {
   if (deleteLogs && forks.length && runningPid()) { await stopProxy(); await startProxy(); }
 }
 
-/** A terminal in the sandbox, through the VM. Leaving it keeps the sandbox running. */
-export async function shell(id) {
+/** A terminal in the sandbox, through the VM; with `claude`, Claude Code
+ * starts in it first. Leaving it keeps the sandbox running. */
+/** The local dashboard's Prompts, only those that ran in this sandbox. */
+export const promptsLink = (id) => `http://127.0.0.1:${portOf(readConfig())}/?box=${encodeURIComponent(id)}`;
+
+export async function shell(id, { claude = false } = {}) {
   id = pickId(id);
   ensureVm();
   await ensureBridge();
   const { name } = registry()[id];
-  say(`Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
+  say(claude ? `Connected to ${name}, starting Claude Code; when it exits you are in the sandbox's shell. The sandbox keeps running.`
+    : `Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
+  say(`Its prompts, and only its: ${promptsLink(id)}`);
   say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');
-  projects(['shell', id], { inherit: true, check: false });
+  projects(['shell', id, ...(claude ? ['--claude'] : [])], { inherit: true, check: false });
   say(`\nLeft ${name}. It is still running. Back in: raytrace connect ${name}   Stop it: raytrace sandbox stop ${name}`);
 }

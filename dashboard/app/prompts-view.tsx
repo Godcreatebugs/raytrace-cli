@@ -12,8 +12,11 @@ import { RunRecap } from './run-recap';
 
 const firstLine = (text: string) => text.split('\n').find((line) => line.trim())?.trim() ?? '(empty prompt)';
 
-export function PromptsView({ traces, loaded = true, selectedId, onSelect, onOpen, onOpenStep, canOpen = () => true }: {
+export function PromptsView({ traces, loaded = true, box = '', onBox, selectedId, onSelect, onOpen, onOpenStep, canOpen = () => true }: {
   traces: Trace[];
+  /** Only the prompts that ran in this sandbox (its id, ?box= in the link), or all of them. */
+  box?: string;
+  onBox?: (box: string) => void;
   /** False until the first load answers: an empty list then means "not yet", not "none". */
   loaded?: boolean;
   selectedId: string;
@@ -25,21 +28,26 @@ export function PromptsView({ traces, loaded = true, selectedId, onSelect, onOpe
   canOpen?: (view: 'calls' | 'sandbox' | 'context') => boolean;
 }) {
   const [day, setDay] = useState<string | null>(null);
-  const shown = traces.filter((trace) => !day || dayKey(trace.startedAt) === day)
+  const mine = box ? traces.filter((trace) => trace.sandboxId === box) : traces;
+  const shown = mine.filter((trace) => !day || dayKey(trace.startedAt) === day)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 
   return <section className="rt-view">
     <header className="rt-view-head"><div><span className="eyebrow">PROMPTS</span><h1>What you asked</h1></div></header>
-    <ActivityGraph dates={traces.map((trace) => trace.startedAt)} selected={day} onSelect={setDay} />
-    <div className="rt-list-head">
+    <ActivityGraph dates={mine.map((trace) => trace.startedAt)} selected={day} onSelect={setDay} />
+    <div className="rt-list-head"><span className="rt-chips">
+      {box && <button type="button" className="rt-chip" title="Show prompts from everywhere" onClick={() => onBox?.('')}>
+        Sandbox {box} <X size={12} />
+      </button>}
       {day
         ? <button type="button" className="rt-chip" onClick={() => setDay(null)}>
             {new Date(`${day}T00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} <X size={12} />
           </button>
-        : <span>Recent</span>}
+        : !box && <span>Recent</span>}
+    </span>
       <small>{shown.length} prompt{shown.length === 1 ? '' : 's'}</small>
     </div>
-    {!shown.length && <p className="rt-empty">{loaded ? 'No prompts captured yet. Send a request through the proxy and it will appear here.' : 'Loading…'}</p>}
+    {!shown.length && <p className="rt-empty">{loaded ? box ? 'No prompts from this sandbox yet. Ask Claude Code something in it and it will appear here.' : 'No prompts captured yet. Send a request through the proxy and it will appear here.' : 'Loading…'}</p>}
     <ol className="rt-prompts">
       {shown.map((trace) => {
         const open = trace.id === selectedId;

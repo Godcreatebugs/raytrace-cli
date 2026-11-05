@@ -548,6 +548,7 @@ def main():
     parser.add_argument('--since', type=int, default=0, help='activity: from this epoch ms')
     parser.add_argument('--until', type=int, default=0, help='activity: up to this epoch ms')
     parser.add_argument('--forget-evidence', action='store_true', help='delete: also delete what the collector recorded for it')
+    parser.add_argument('--claude', action='store_true', help='shell: start Claude Code first; its exit leaves the shell')
     opts = parser.parse_args()
     if opts.action == 'list':
         ids = subprocess.check_output(['docker', 'ps', '-aq', '--filter', 'label='+LABEL], text=True).split()
@@ -645,8 +646,10 @@ def main():
         if opts.action == 'start':
             return
         # Exiting this shell or Codex never stops/removes the persistent container.
-        proc = subprocess.run(['docker', 'exec', '-it', opts.id, '/bin/bash', '-c',
-            'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; exec /bin/bash'], check=False)
+        start = 'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; '
+        if opts.claude:
+            start += 'cd /workspace 2>/dev/null; if command -v claude >/dev/null; then claude; else echo "Claude Code is not installed in this sandbox."; fi; '
+        proc = subprocess.run(['docker', 'exec', '-it', opts.id, '/bin/bash', '-c', start+'exec /bin/bash'], check=False)
         sys.exit(proc.returncode)
     elif opts.action == 'stop':
         run('docker', 'stop', '-t', '10', opts.id)

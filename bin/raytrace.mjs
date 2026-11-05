@@ -16,8 +16,9 @@ Cloud sandboxes:
   raytrace auth login|status|logout         your RayTrace sign-in
   raytrace sandbox create [--name <name>]   upload this Git repository to a new sandbox
                                             (up to 200 MiB, 25 MiB a file, 20,000 files)
-  raytrace connect [id]                     a terminal in it; with one sandbox the id is
-                                            optional (same as: raytrace sandbox shell [id])
+  raytrace connect [id] [--claude]          a terminal in it; with one sandbox the id is
+                                            optional (same as: raytrace sandbox shell [id]);
+                                            --claude starts Claude Code in it at once
   raytrace --code <code>                    beta invite: redeem a code RayTrace gave you for one
                                             $10-credit sandbox (signed in first; also: raytrace code <code>)
   raytrace sandbox list
@@ -120,9 +121,9 @@ if (command === 'auth') {
 
 // `raytrace connect <id>`: the sandbox's terminal, by the id the dashboard shows.
 if (command === 'connect') {
-  const flags = { local: rest.includes('--local') };
-  const args = rest.filter((arg) => arg !== '--local');
-  if (args.length > 1 || args[0]?.startsWith('-')) { console.error('Usage: raytrace connect [sandbox-id or local name] [--local]'); process.exit(2); }
+  const flags = { local: rest.includes('--local'), claude: rest.includes('--claude') };
+  const args = rest.filter((arg) => arg !== '--local' && arg !== '--claude');
+  if (args.length > 1 || args[0]?.startsWith('-')) { console.error('Usage: raytrace connect [sandbox-id or local name] [--local] [--claude]'); process.exit(2); }
   const sandbox = await import('../src/sandbox.mjs');
   try { await sandbox.shell(args[0], flags); process.exit(0); }
   catch (error) { console.error(`raytrace connect: ${error.message}`); process.exit(1); }
