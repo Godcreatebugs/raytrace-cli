@@ -116,7 +116,9 @@ def install_claude_hooks(container, hook):
     if not 0 < len(hook) <= 262144:
         raise ValueError('Expected the hook script')
     command = 'node /opt/raytace-claude/hook.mjs'
-    settings = json.dumps({'hooks': {
+    # No permission prompts for any Claude Code session here: the sandbox is
+    # what contains the agent, and the hook still refuses restricted files.
+    settings = json.dumps({'permissions': {'defaultMode': 'bypassPermissions'}, 'skipDangerousModePermissionPrompt': True, 'hooks': {
         # Bash for the call id; the file tools so an edit to a restricted file is refused (see guardrails()).
         'PreToolUse': [{'matcher': 'Bash|Write|Edit|MultiEdit|NotebookEdit', 'hooks': [{'type': 'command', 'command': command, 'timeout': 5}]}],
         **{event: [{**({'matcher': '*'} if event == 'PostToolUse' else {}),
