@@ -10,7 +10,8 @@ Usage: raytrace <command>
 Get started in the cloud (preview):
   1. raytrace auth login             sign in, or create your account, in the browser
   2. raytrace sandbox create         from a Git repository: upload it to a new sandbox
-  3. raytrace connect <sandbox-id>   a terminal in it; run claude or codex there
+  3. raytrace connect <sandbox-id> --claude
+                                     a terminal in it, with Claude Code running (or --codex)
 
 Cloud sandboxes:
   raytrace auth login|status|logout         your RayTrace sign-in
@@ -28,16 +29,20 @@ Cloud sandboxes:
                                             delete it; traces go too unless --keep-traces (paid plans)
 
 Use from your editor's agent (VS Code, Cursor, Claude Code, any MCP client):
-  raytrace mcp                              MCP server on stdio: sign in, create, list, start,
-                                            stop and destroy cloud sandboxes. Add it to your
-                                            editor as the command: npx -y @raytrace-cli/cli mcp
+  raytrace mcp                              MCP server on stdio: create, open, list, start, stop
+                                            and destroy local and cloud sandboxes, and run
+                                            commands in cloud ones. Add it to your editor as:
+                                            npx -y @raytrace-cli/cli@latest mcp
+                                            (Claude Code: claude mcp add --scope user raytrace
+                                             -- npx -y @raytrace-cli/cli@latest mcp)
 
 Local sandboxes (your project stays on this machine):
   raytrace sandbox create --local [--name <name>] [--yes]
                                             a copy of this Git repository in a gVisor sandbox
                                             in a Linux VM here; the name defaults to the folder's.
                                             Offers to download Lima if missing (--yes: no prompt)
-  raytrace connect <name>                   a terminal in it; run claude there
+  raytrace connect <name> [--claude|--codex]
+                                            a terminal in it, optionally with that agent running
   raytrace sandbox list --local
   raytrace sandbox start|stop <name>
   raytrace sandbox destroy <name> [--delete-logs | --keep-logs]
