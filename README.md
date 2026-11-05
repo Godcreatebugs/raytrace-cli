@@ -2,222 +2,305 @@
 
 **See what your coding agent actually did.**
 
-[ npm package ](https://www.npmjs.com/package/@raytrace-cli/cli) ·
-[ Quick start ](#quick-start) · [ Cloud sandboxes ](#cloud-sandboxes-preview) ·
-[ Editor (MCP) ](#use-from-your-editor-mcp) ·
-[ Local sandboxes ](#local-sandboxes) ·
-[ Privacy ](#privacy) · [ Report an issue ](https://github.com/Godcreatebugs/raytrace-cli/issues)
+[npm package](https://www.npmjs.com/package/@raytrace-cli/cli) ·
+[Set up in your editor (MCP)](#set-up-in-your-editor-mcp) ·
+[Local sandboxes](#local-sandboxes) ·
+[Cloud sandboxes](#cloud-sandboxes) ·
+[Commands](#commands) ·
+[Report an issue](https://github.com/Godcreatebugs/raytrace-cli/issues)
 
-Your agent finished the task. Which files did it read? What commands did it run?
-Where did the tokens and money go?
+Your agent finished the task. Which files did it read? What commands did it
+run? Where did the tokens and money go?
 
-RayTrace turns Claude Code and Codex sessions into a dashboard you can explore:
-prompts, answers, tool calls, cost, and captured context. Run your agent in a
-RayTrace cloud sandbox and review every session with your team.
+RayTrace runs Claude Code or Codex in a **sandbox**, an isolated copy of your
+project, and records everything that happens there: your prompts, the agent's
+answers and tool calls, and every command that actually ran, with its exit code
+and network connections. You explore it all in a dashboard.
 
 ![RayTrace tool-call timeline showing commands, reported results, cost, time, and token usage](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/tool-calls.jpg)
 
 *One real coding task: 50 model round trips, 58 tool calls, and a command-by-command record.*
 
-- **Follow the work.** Open a prompt and trace the steps that led to its answer.
-- **Inspect the evidence.** Expand tool calls to see commands and their reported output.
-- **Understand the cost.** See model, token usage, time, and cost when available.
-- **Explore the context.** Review earlier conversation and files brought into the task.
+## Pick how you want to use it
 
-## Quick start
+| | Where it runs | Account | Best for |
+|---|---|---|---|
+| **[From your editor (MCP)](#set-up-in-your-editor-mcp)** | local or cloud, you choose per sandbox | only for cloud | asking your agent "put this repo in a sandbox and open it" |
+| **[Local sandbox](#local-sandboxes)** | a Linux VM on your machine | none | keeping your code on your machine; free and open source |
+| **[Cloud sandbox](#cloud-sandboxes)** | RayTrace's servers | yes | sharing sessions with your team at [app.raytracer.si](https://app.raytracer.si) |
 
-You need **Node.js 22.13 or newer** (`node --version`). macOS and Linux are
-supported. To keep your project on your own machine instead, see
-[Local sandboxes](#local-sandboxes).
+All three need **Node.js 22.13 or newer** (`node --version`) on macOS or Linux.
+Windows is experimental.
+
+---
+
+## Set up in your editor (MCP)
+
+`raytrace mcp` is an [MCP](https://modelcontextprotocol.io) server. Add it to
+your editor once, and your agent can create, open, stop and destroy sandboxes
+for you. There is nothing to install first: `npx` downloads the CLI on first use.
+
+### 1. Add the server
+
+**Claude Code.** One command, then restart Claude Code. `--scope user` makes it
+available in every project:
 
 ```sh
-npm install -g @raytrace-cli/cli
-raytrace auth login             # opens your browser: sign in, or create your account
-cd your-project                 # any Git repository
-raytrace sandbox create         # uploads it to a new cloud sandbox and prints its id
-raytrace connect <sandbox-id>   # a terminal in the sandbox: run claude or codex there
+claude mcp add --scope user raytrace -- npx -y @raytrace-cli/cli@latest mcp
 ```
 
-`auth login` prints a short code and opens the sign-in page. New here? Create
-your account on that page, approve the code, and come back to the terminal.
+Check it with `claude mcp list`, which should show `raytrace` as connected.
 
-Then open **[app.raytracer.si](https://app.raytracer.si)** to review the
-session with your team: prompts, tool calls, and the commands that actually
-ran. You can also create the sandbox there, by dropping a project folder on the
-Sandboxes page. RayTrace asks you for no API key. See
-[Cloud sandboxes](#cloud-sandboxes-preview) for what is uploaded and the limits.
+**Cursor.** Add to `~/.cursor/mcp.json` (every project) or `.cursor/mcp.json` (one project):
 
-## Cloud sandboxes (preview)
+```json
+{
+  "mcpServers": {
+    "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli@latest", "mcp"] }
+  }
+}
+```
 
-A cloud sandbox is an isolated copy of your project on RayTrace's servers, with
-a terminal you open from your machine. Run Claude Code or Codex inside it: what
-the agent asked, the tool calls it made, and the commands that actually ran are
-recorded for your organization.
+**VS Code.** Add to `.vscode/mcp.json` in the project, or run **MCP: Open User
+Configuration** from the command palette for every project:
 
-The [quick start](#quick-start) has the commands. If you skip `raytrace auth
-login`, `raytrace sandbox create` and `raytrace connect` start the same sign-in
-first. With one sandbox, `raytrace connect` works without the id.
+```json
+{
+  "servers": {
+    "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli@latest", "mcp"] }
+  }
+}
+```
 
-At **[app.raytracer.si](https://app.raytracer.si)**, sign in with the same
-account to see your organization's prompts, sandboxes and tool calls. A sandbox
-created there shows the command to open it, `raytrace connect <sandbox-id>`.
-Sandboxes belong to the account that made them: `raytrace auth status` says
-which one the CLI is using.
+**Codex.** `codex mcp add raytrace -- npx -y @raytrace-cli/cli@latest mcp`
 
-- **What is uploaded:** the files Git would track in the repository (including
-  new files it does not ignore), without `.git`, dependencies such as
-  `node_modules`, build output, `.env*` files, private keys (`.pem`, `.key`,
-  `.p12`, `.pfx`) and common credential files (`.npmrc`, `.netrc`, `id_rsa`, …).
-  Review your project for secrets inside other files before you upload.
-- **Limits:** a project may be up to 200 MiB and 20,000 files, each file up to
-  25 MiB (100 MiB once packed). A project over a limit is refused, with the
-  files named, and nothing is uploaded; add them to `.gitignore`. You can have
-  three sandboxes at a time.
-- **Signing in to your agent:** sign in to Claude Code inside the sandbox as
-  you would on your machine. That sign-in stays in the sandbox until you
-  destroy it.
-- **When you are done:** `raytrace sandbox stop` keeps the files;
-  `raytrace sandbox destroy` deletes them and any sign-in made inside. The
-  recorded sessions are kept for your organization.
+**Any other MCP client.** Run the command `npx` with the arguments
+`-y @raytrace-cli/cli@latest mcp`, over stdio. Most clients use the same
+`mcpServers` JSON as Cursor.
 
-Cloud sandboxes are a preview and may change; please
-[report issues](https://github.com/Godcreatebugs/raytrace-cli/issues) you run into.
+> Already have the CLI installed globally? You can use `raytrace mcp` as the
+> command instead of `npx`.
 
-## Use from your editor (MCP)
+### 2. Ask for a sandbox
 
-`raytrace mcp` is an [MCP](https://modelcontextprotocol.io) server, so the agent
-in VS Code, Cursor, Claude Code or any MCP client can create and manage
-sandboxes for you, in the cloud or on your machine: "put this project in a
-sandbox", "connect this repo to a local sandbox", "stop my sandbox". Nothing to
-install first; `npx` fetches the CLI.
+Open a Git project in your editor and ask your agent in plain words:
 
-- **Claude Code:** `claude mcp add raytrace -- npx -y @raytrace-cli/cli mcp`
-- **VS Code** (`.vscode/mcp.json`):
-  ```json
-  { "servers": { "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli", "mcp"] } } }
-  ```
-- **Cursor** (`~/.cursor/mcp.json`) and most other clients:
-  ```json
-  { "mcpServers": { "raytrace": { "command": "npx", "args": ["-y", "@raytrace-cli/cli", "mcp"] } } }
-  ```
+| You say | What happens |
+|---|---|
+| "Create a local sandbox and connect this repo" | a sandbox on your machine, then a terminal opens with Claude Code running in it |
+| "Put this project in a cloud sandbox" | uploads the repo to RayTrace's cloud, then opens a terminal with Claude Code in it |
+| "Open my sandbox with Codex" | a terminal connected to an existing sandbox, with Codex running in it |
+| "List my sandboxes" / "Stop demo-box" / "Destroy it" | manages them; the agent asks you before it destroys anything |
+| "Run `npm test` in the sandbox" | runs a command in a cloud sandbox and reports the result back in the chat |
 
-Tools: `login`, `create_sandbox`, `list_sandboxes`, `sandbox_status`,
-`start_sandbox`, `stop_sandbox`, `destroy_sandbox`, `run_command`,
-`get_command_result`, `cancel_command`. The first time, the agent
-calls `login` and shows you a code to approve in the browser; it is the same
-sign-in as `raytrace auth login`. `create_sandbox` uploads the Git project open
-in your editor, with the same rules and limits as `raytrace sandbox create`.
-`destroy_sandbox` deletes the sandbox's traces too unless the agent passes
-`keep_traces` (paid plans), as `raytrace sandbox destroy --yes` does.
+**The first time:**
 
-**Working in the sandbox with Claude Code or Codex.** After `create_sandbox`, a new
-terminal opens connected to the sandbox with Claude Code starting in it, and the
-session you have there is recorded (`connect: false` skips this).
-`connect_sandbox` does the same for a sandbox you already have: "open my sandbox
-with Claude". The terminal opens where your agent runs when it can: a new tmux
-window inside tmux, a new iTerm window or WezTerm tab; otherwise a new Terminal
-window on macOS (also from VS Code, whose built-in terminal cannot be opened from
-outside), the desktop's terminal on Linux, or Windows Terminal. macOS asks once
-whether your terminal may be controlled. If no terminal can be opened, the agent
-gives you the command: `raytrace connect <id or name> --claude`. Ask for Codex
-instead and it starts Codex (`--codex`). Either runs without approval prompts
-(Claude Code with `--dangerously-skip-permissions`, Codex with
-`--dangerously-bypass-approvals-and-sandbox`, and both by default in the
-sandbox's managed settings, so typing `claude` or `codex` there does the same):
-the sandbox is what contains them, and everything they run is recorded. Files
-the project's owner restricted stay locked. The first time in each sandbox, the
-agent asks you to sign in.
+- **Cloud sandboxes** need a RayTrace sign-in. The agent shows you a short code
+  and opens a browser page. Approve it there (or create your account), and the
+  agent carries on. Local sandboxes need no account.
+- **The first local sandbox** sets up a Linux VM, which takes a few minutes. If
+  [Lima](https://lima-vm.io) is missing, the agent asks before downloading it.
+  See [what you need](#what-you-need).
+- **In each new sandbox**, Claude Code or Codex asks you to sign in to your
+  Anthropic or OpenAI account, as it would on your machine.
+- **On macOS**, the first time a terminal is opened for you, macOS asks whether
+  your editor may control your terminal app. Allow it.
 
-**Running commands from the chat.** `run_command` starts a shell command in the
-sandbox's `/workspace` (up to 4 at a time, 120 s by default, at most 1,800 s) and
-returns at once with a command id. `get_command_result` gives its state, the real
-exit code (*unknown* is never reported as success) and the last 20,000 characters
-of stdout and stderr; `wait_seconds` (up to 30) waits for a running command, so
-the agent does not have to poll. `cancel_command` stops it and everything it
-started. What a command prints comes from your project, so the agent is told to
-treat it as data, not as instructions. This needs a RayTrace server with the
-command API; on one without it the tools say so, and you can still run
-`raytrace connect <id>` yourself in a terminal (it needs a real terminal, which
-an agent's own shell does not have). Running commands works on cloud sandboxes
-only.
+### 3. Work in the sandbox
 
-**Local sandboxes from the chat.** Ask for a local sandbox and the agent calls
-`create_sandbox` with `local: true`: the same as `raytrace sandbox create --local`
-in the project, so nothing is uploaded and no RayTrace sign-in is needed. If Lima
-is not installed, the agent asks you before downloading it (`install_lima`). The
-first local sandbox sets up the Linux VM, which takes several minutes: the agent
-gets an answer after about a minute and follows the rest with `sandbox_status`,
-and the setup carries on even if the chat ends. `list_sandboxes` shows local and
-cloud sandboxes together; `start_sandbox`, `stop_sandbox`, `sandbox_status` and
-`destroy_sandbox` and `connect_sandbox` take a local sandbox's name. Destroying one archives its
-captured logs to `~/.raytrace/archive` unless the agent passes `delete_logs`
-(`upload_first` uploads its evidences to the cloud before). To work in it, run
-`raytrace connect <name> --claude` in a terminal, or ask for `connect_sandbox`.
+The terminal opens where you work: a new tmux window if you're in tmux, a new
+iTerm window or WezTerm tab, otherwise a new Terminal window on macOS (VS Code's
+built-in terminal can't be opened from outside), your desktop's terminal on
+Linux, or Windows Terminal. If none can be opened, the agent gives you the
+command to paste instead, such as `raytrace connect demo-box --claude`.
+
+Inside, the agent runs **without approval prompts**. The sandbox is what keeps
+it contained, so there's no need to approve every command, and everything it
+does is recorded. See [Working in a sandbox](#working-in-a-sandbox).
+
+### MCP tools reference
+
+| Tool | What it does |
+|---|---|
+| `login` | signs in to RayTrace (cloud only): shows a code to approve in the browser |
+| `create_sandbox` | copies the open Git project into a new sandbox. `local: true` for one on your machine, `agent: "codex"` to open it with Codex, `connect: false` to skip opening a terminal |
+| `connect_sandbox` | opens a terminal in an existing sandbox with Claude Code (default), Codex (`agent: "codex"`) or a plain shell (`agent: "none"`); starts it first if it's stopped |
+| `list_sandboxes`, `sandbox_status` | your local and cloud sandboxes, and one sandbox's details or creation progress |
+| `start_sandbox`, `stop_sandbox` | stopping keeps the files |
+| `destroy_sandbox` | deletes a sandbox. Cloud: its traces go too, unless `keep_traces` (paid plans). Local: its logs are archived, unless `delete_logs` |
+| `run_command`, `get_command_result`, `cancel_command` | run shell commands in a cloud sandbox from the chat: up to 4 at once, 120 s by default and at most 30 minutes, with the real exit code and output |
+
+Local sandboxes are named by their name and cloud ones by their id (`rtp-…`).
+Whatever a command prints is treated as data from your project, never as
+instructions to the agent.
+
+---
 
 ## Local sandboxes
 
-Prefer to keep your project on your own machine? Run the same sandbox locally.
-It is open source and needs no RayTrace account.
+Run the sandbox on your own machine. Your project is copied into it, and nothing
+is uploaded. It is open source and needs no RayTrace account.
+
+### What you need
+
+| | Requirement |
+|---|---|
+| **macOS 13.5 or later** | Nothing to install. RayTrace uses your [Lima](https://lima-vm.io) 2.0+ if you have it, or offers to download Lima into `~/.raytrace/lima` (no admin rights; checked against a pinned checksum) |
+| **Older macOS** | QEMU too: `brew install qemu` |
+| **Linux** | Lima, QEMU, and access to `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log out and in) |
+| **Windows** | experimental; RayTrace doesn't download Lima there |
+| **Disk and memory** | the first setup downloads about 1 GB; the VM uses 4 GiB of memory while it runs |
+
+`raytrace doctor` checks all of this and says how to fix anything missing.
+
+### Set it up
 
 ```sh
-cd your-project
-raytrace sandbox create --local --name my-box   # first run sets up a Linux VM; a few minutes
-raytrace connect my-box                         # a terminal in it: run claude there
-raytrace sandbox destroy my-box                 # asks whether to delete its logs too
+npm install -g @raytrace-cli/cli
+
+cd your-project                              # any Git repository
+raytrace sandbox create --local              # first time: sets up the VM, a few minutes
+raytrace connect your-project --claude       # a terminal in it, with Claude Code running
 ```
 
-- **How it runs:** a Linux VM made with [Lima](https://lima-vm.io), and inside
-  it each sandbox in a Docker container under [gVisor](https://gvisor.dev),
-  with no access to your machine's files or private networks. A copy of the
-  project goes in, picked the same way as for a cloud sandbox; your own files
-  are never changed. `--name` defaults to the repository folder's name.
-- **What is recorded:** the commands, file changes and network connections the
-  sandbox makes, by a collector outside it that the agent cannot turn off,
-  and its Claude Code sessions. All of it is in your local dashboard
-  (`raytrace open`): **Sandboxes** lists each sandbox with its prompts, and
-  **Sandbox evidence** shows, for one prompt, every command that actually ran,
-  its exit code and what it reached on the network, each joined to the tool
-  call that ran it. The raw collector feed is at `/raytace/viewer/` on the
-  dashboard's address.
-  Nothing leaves your machine.
-- **Changes:** the sandbox's Claude Code hook snapshots the project after
-  every edit, so **Changes** shows what each prompt left different, file by
-  file, with a patch to take home.
-- **Playground:** rerun a session from any step with part of it changed (a
-  tool result, a file, the model, the message) and compare where it ends up,
-  optionally with a check command such as `npm test` as pass or fail. Each
-  rerun is a fork: a sandbox of its own in the VM, started from the snapshot
-  just before that step, running Claude Code on the sign-in you made in the
-  sandbox (so it uses your Claude account). The newest fork is kept, stopped,
-  for a day; destroying a sandbox destroys its forks.
-- **Signing in to your agent:** run `claude` inside the sandbox and sign in.
-  RayTrace passes no key in. The sign-in stays in the sandbox until you destroy it.
-- **Destroying it:** `raytrace sandbox destroy <name>` deletes the sandbox and
-  asks whether to delete the logs captured in it as well. Yes deletes them
-  everywhere, dashboard included, Playground forks too. No moves them to
-  `~/.raytrace/archive/<name>-<time>/` (Claude Code transcripts, its forks'
-  under `forks/`, and the recorded commands, files and connections as JSON
-  lines), and its sessions stay in your dashboard. `--delete-logs` or `--keep-logs` answers without
-  asking.
-- **What you need:** nothing to install on macOS 13.5 or later. RayTrace
-  uses [Lima](https://lima-vm.io) for the VM: yours if you have Lima 2.0 or
-  later, otherwise it offers to download Lima's own release into
-  `~/.raytrace/lima` (no admin rights; checked against a pinned checksum).
-  Docker, gVisor and the agents are installed inside the VM, not on your
-  machine. On Linux, also QEMU and access to `/dev/kvm`. On macOS before
-  13.5, QEMU (`brew install qemu`). `raytrace doctor` shows what is missing,
-  and `create --local` says so before it starts. First run downloads about
-  1 GB (Lima, Ubuntu, packages); the VM uses 4 GiB of memory while it runs.
-- **Platforms:** macOS and Linux. Windows is experimental: Lima's Windows
-  support is itself experimental, and RayTrace does not download Lima there.
-- **The VM:** `limactl stop raytrace` frees its memory; `limactl delete
-  raytrace` removes it.
+- The sandbox is named after the folder. Use `--name my-box` to choose the name.
+- Use `--codex` instead of `--claude` to start Codex, or leave both off for a
+  plain shell where you run `claude` or `codex` yourself.
+- `connect` prints a link to the dashboard showing only this sandbox's prompts.
+  `raytrace open` opens the full dashboard.
 
-## AI features, on your own key
+Or skip the commands and ask your editor's agent:
+[set up MCP](#set-up-in-your-editor-mcp), then say "create a local sandbox and
+connect this repo".
 
-The dashboard records and shows everything above without any key. A few
-views can also ask a model to explain a run; locally they use **your own
-OpenRouter key**, and the calls are billed to your OpenRouter account.
+### Day to day
+
+```sh
+raytrace sandbox list --local         # your local sandboxes
+raytrace connect my-box --claude      # back in; the sandbox keeps running when you leave
+raytrace sandbox stop my-box          # stop it; its files are kept
+raytrace sandbox start my-box
+raytrace sandbox destroy my-box       # asks whether to delete its captured logs too
+limactl stop raytrace                 # stop the whole VM to free its 4 GiB of memory
+```
+
+When you destroy a sandbox, you're asked what to do with its logs:
+
+- **Yes** deletes them everywhere, the dashboard and Playground forks included.
+- **No** moves them to `~/.raytrace/archive/<name>-<time>/`: the agent
+  transcripts, the recorded commands, files and connections as JSON lines, and
+  any forks. Its sessions stay in your dashboard.
+
+`--delete-logs` or `--keep-logs` answers without asking. To keep the logs in the
+cloud, `raytrace upload logs --sandbox my-box` sends them to
+[app.raytracer.si](https://app.raytracer.si) (needs a sign-in).
+
+### How it works
+
+- **Isolation:** each sandbox is a Docker container under
+  [gVisor](https://gvisor.dev), inside a Linux VM made with
+  [Lima](https://lima-vm.io). It can't see your machine's files or private
+  networks. A copy of your project goes in (picked the same way as for
+  [cloud uploads](#what-is-uploaded)); your own files are never changed.
+- **Resources:** each sandbox gets 2 GB of memory, 2 CPUs, 256 processes and a
+  512 MB `/tmp`. All sandboxes share the VM's 30 GiB disk.
+- **Recording:** a collector outside the sandbox, which the agent can't turn
+  off, records every command, file change and network connection. Claude Code's
+  prompts, answers and tool calls go to your local dashboard as well. Nothing
+  leaves your machine.
+- **Changes:** the project is snapshotted after every edit, so **Changes** in
+  the dashboard shows what each prompt left different, with a patch to take home.
+- **Playground:** rerun a session from any step with something changed (a tool
+  result, a file, the model or the message) and compare the outcomes,
+  optionally with a check such as `npm test`. Each rerun is a fork, a sandbox
+  of its own started from the snapshot just before that step.
+
+---
+
+## Cloud sandboxes
+
+A cloud sandbox is the same isolated copy of your project, on RayTrace's
+servers, with sessions recorded for your organization at
+**[app.raytracer.si](https://app.raytracer.si)**. This is a preview.
+
+```sh
+npm install -g @raytrace-cli/cli
+raytrace auth login                    # opens your browser: sign in, or create your account
+cd your-project                        # any Git repository
+raytrace sandbox create                # uploads it and prints the sandbox id
+raytrace connect <sandbox-id> --claude # a terminal in it, with Claude Code running
+```
+
+`auth login` prints a short code and opens the sign-in page; approve it there.
+If you skip it, `sandbox create` and `connect` ask you to sign in first. With
+one sandbox, `connect` needs no id. You can also create a sandbox in the web
+dashboard by dropping a project folder on the **Sandboxes** page.
+
+### What is uploaded
+
+The files Git would track (including new files it doesn't ignore), **without**
+`.git`, dependencies such as `node_modules`, build output, `.env*` files, private
+keys (`.pem`, `.key`, `.p12`, `.pfx`) and common credential files (`.npmrc`,
+`.netrc`, `id_rsa`, …). Check for secrets inside other files before you upload.
+
+### Limits
+
+- **Project size:** up to 200 MiB and 20,000 files, each file up to 25 MiB
+  (100 MiB once packed). A project over a limit is refused, with the files
+  named, and nothing is uploaded; add those files to `.gitignore`.
+- **Sandboxes at a time:** Beta 1, Individual 5, Team & Enterprise 20.
+  Destroyed ones don't count.
+- **Each sandbox:** 2 GB of memory, 2 CPUs, 256 processes, a 512 MB `/tmp`.
+
+### When you are done
+
+`raytrace sandbox stop` keeps the files. `raytrace sandbox destroy` deletes them
+and any sign-in made inside, along with the recorded traces. To keep the traces,
+use `--keep-traces` (paid plans).
+
+---
+
+## Working in a sandbox
+
+- **Claude Code and Codex are preinstalled** in every sandbox, local and cloud.
+- **No approval prompts.** `--claude` starts Claude Code with
+  `--dangerously-skip-permissions`, and `--codex` starts Codex with
+  `--dangerously-bypass-approvals-and-sandbox`. The sandbox's own settings, which
+  the agent can't change, make this the default too, so typing `claude` or
+  `codex` yourself works the same way. The sandbox is what keeps the agent
+  contained, and every command is recorded.
+- **Restricted files stay locked.** Files a project's owner restricts in the
+  dashboard (**Initial scan**) can't be changed by the agent, whatever it tries.
+- **Signing in:** sign in to Claude Code or Codex inside the sandbox, as you
+  would on your machine. The sign-in stays in that sandbox until you destroy it.
+- **Leaving:** exiting the agent drops you into the sandbox's shell, and exiting
+  that leaves the sandbox running. `raytrace connect` takes you back.
+
+In local sandboxes, Codex's prompts don't reach the dashboard's **Prompts** page
+yet. Its commands, file changes and network connections are recorded.
+
+---
+
+## The dashboard
+
+`raytrace open` opens your local dashboard. Cloud sessions are at
+[app.raytracer.si](https://app.raytracer.si).
+
+| Page | What it shows |
+|---|---|
+| **Prompts** | what you asked and what came back, with cost and tool-call counts. `?box=<sandbox id>` shows a single sandbox |
+| **Tool calls** | each step the agent took, with the command and its reported output |
+| **Sandbox evidence** | for one prompt, every command that actually ran, its exit code and what it reached on the network, each tied to the tool call that ran it |
+| **Changes** | what each prompt changed, file by file |
+| **Story, Chain of thought** | why the agent did what it did |
+| **Context** | the earlier conversation and files the agent had |
+| **Playground** | rerun a session from any step with something changed |
+
+### AI features, on your own key
+
+Everything above works without any key. A few views can also ask a model to
+explain a run, using **your own OpenRouter key**, billed to your OpenRouter
+account:
 
 ```sh
 raytrace key openrouter   # paste your key from https://openrouter.ai/keys (not echoed)
@@ -230,155 +313,125 @@ raytrace key              # which keys are set
 | Chain of thought: the likely reasons for each tool call | Chain of thought | `qwen/qwen3-coder` |
 | Step summaries, and plain-English lines for commands no rule describes | Tool calls, Sandbox evidence | `openai/gpt-oss-120b` |
 
-- **Without a key** those parts say so and everything else works: Story's key
-  moments, Chain of thought's unranked reasons and the rule-based command
-  descriptions need no model.
-- **Cost:** each answer is kept, so opening the same prompt again costs
-  nothing. Nothing is sent until you open a view that needs it.
-- **What is sent:** to OpenRouter, the parts of the recorded run the feature
-  reads (the prompt, tool calls and their results, commands). Nothing goes to
-  RayTrace.
+- **No key?** Those parts say so, and everything else works.
+- **Cost:** each answer is kept, so opening the same prompt again is free.
+  Nothing is sent until you open a view that needs it.
+- **What's sent:** only to OpenRouter, the parts of the run the feature reads.
+  Nothing goes to RayTrace.
 - **Other models:** set `RAYTACE_OBSERVER_MODEL` (recap),
   `RAYTACE_ATTRIBUTION_MODEL` (Chain of thought) or `RAYTACE_SUMMARY_MODEL`
   (summaries) in `~/.raytrace/config.env`, then `raytrace stop && raytrace start`.
-- **Optional, Jev ranking:** `raytrace key typesafe` adds a
-  [TypeSafe](https://typesafe.ai) key, which ranks Chain of thought's reasons
-  and rates how severe each command was. Without it the reasons are listed
-  unranked and severity comes from rules.
+- **Optional:** `raytrace key typesafe` adds a [TypeSafe](https://typesafe.ai)
+  key, which ranks Chain of thought's reasons and rates how severe each command
+  was.
 - `raytrace key openrouter --remove` removes a key.
+
+---
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `raytrace sandbox create` | upload this Git repository to a new cloud sandbox; `--name <name>` |
-| `raytrace connect [id] [--claude\|--codex]` | open a terminal in a sandbox, signing in first if needed (also `raytrace sandbox shell [id]`); `--claude` or `--codex` starts that agent in it, without approval prompts |
-| `raytrace sandbox list` | your cloud sandboxes |
-| `raytrace sandbox start\|stop [id]` | start or stop a sandbox; stopping keeps its files |
-| `raytrace sandbox destroy [id]` | delete a sandbox; its recorded sessions are kept |
-| `raytrace auth login` | sign in to RayTrace; `status`, `logout` |
-| `raytrace mcp` | MCP server on stdio for your editor's agent; see [Use from your editor](#use-from-your-editor-mcp) |
-| `raytrace --code <code>` | beta invite: redeem a code RayTrace gave you (signed in first) for one $10-credit sandbox; codes are single-use, are deleted on redemption, and expire after 3 days, as does the credit |
-| `raytrace sandbox create --local [--name <name>]` | the same sandbox in a Linux VM on this machine; offers to download Lima if needed (`--yes` skips the question) |
-| `raytrace sandbox list --local` | your local sandboxes; their names work with `connect`, `start`, `stop` and `destroy` |
-| `raytrace sandbox destroy <name> [--delete-logs \| --keep-logs]` | delete a local sandbox; asks whether its captured logs go too, or move to `~/.raytrace/archive` |
-| `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded trace to terminal or owner-only file without running the proxy |
-| `raytrace doctor` | what this machine has and lacks, local sandboxes included |
-| `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features; asked for, never taken as an argument |
+| `raytrace mcp` | the MCP server for your editor; see [Set up in your editor](#set-up-in-your-editor-mcp) |
+| `raytrace sandbox create [--local] [--name <name>]` | copy this Git repository into a new sandbox, in the cloud or (`--local`) on this machine |
+| `raytrace connect [id or name] [--claude \| --codex]` | open a terminal in a sandbox, optionally with an agent running in it |
+| `raytrace sandbox list [--local]` | your sandboxes |
+| `raytrace sandbox start\|stop <id or name>` | start or stop one; stopping keeps its files |
+| `raytrace sandbox destroy <id or name>` | delete one. Cloud: `--keep-traces` (paid plans). Local: `--delete-logs` or `--keep-logs` |
+| `raytrace open` | open the local dashboard |
+| `raytrace auth login\|status\|logout` | your RayTrace sign-in, for cloud sandboxes |
+| `raytrace upload logs [--sandbox <name>]` | send a local sandbox's recorded logs to the cloud dashboard; `raytrace upload status` shows your storage |
+| `raytrace share <trace-id> [--fork]` | a time-limited link to one recorded prompt; `--list`, `--revoke <share-id>` |
+| `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded prompt to the terminal or a file, even with RayTrace stopped |
+| `raytrace --code <code>` | redeem a beta invite code |
+| `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features |
+| `raytrace doctor` | what this machine has and lacks |
+
+`raytrace help` lists everything.
+
+---
 
 ## Beta invites
 
-If RayTrace gave you a beta code, sign in first, redeem it, then create your
-sandbox — in that order:
+If RayTrace gave you a beta code, sign in, redeem it, then create your sandbox:
 
 ```sh
 raytrace auth login
-raytrace --code <code>          # also: raytrace code <code>
+raytrace --code <code>
 raytrace sandbox create
 ```
 
-Redeeming deletes the code on RayTrace's servers; it can never be used
-again, by anyone. Codes expire 3 days after they are issued, and the $10 of
-OpenRouter credit expires 3 days after you redeem it, so do not sit on
-either. Your account shows as **Beta** in the cloud dashboard until the
-credit ends, and the credited sandbox is tagged Beta there too. Connecting
-to a credited sandbox after its 3 days are up warns you that model calls
-will be refused; the sandbox itself still opens.
-
-Codes are minted only from the backend repo (`raytrace`:
-`python3 worker/gvisor/mint_beta_codes.py`, 10 at a time); this CLI never
-generates them.
-
-## Exporting traces
-
-Export a recorded session directly from local evidence, even when RayTrace and the VM are stopped:
-
-```sh
-# View trace in terminal as Markdown
-raytrace export <trace-id>
-
-# Export structured JSON
-raytrace export <trace-id> --format json
-
-# Save report to a file with owner-only (0600) permissions
-raytrace export <trace-id> --format markdown --output trace.md
-```
-
-Exported traces contain the full turn prompt, answer, tool calls, exit codes, and observed sandbox execution. Output files refuse to overwrite existing files to prevent accidental data loss.
+The code gives you one sandbox with $10 of model credit. Codes are single-use
+and expire 3 days after they're issued, and the credit expires 3 days after you
+redeem it. Your account and that sandbox show as **Beta** in the cloud dashboard
+until then.
 
 ## Privacy
 
-Local sandboxes keep everything on your machine. Cloud sandboxes run on
-RayTrace's servers.
+- **Local sandboxes** keep everything on your machine, in `~/.raytrace`, readable
+  only by you. The local dashboard's API needs the token in
+  `~/.raytrace/api-token`, so other accounts on the machine can't read your
+  traces. `raytrace open` signs your browser in with a one-time link.
+- **Cloud sandboxes** upload your project ([what is uploaded](#what-is-uploaded))
+  and record prompts, model requests and answers, tool calls and commands on
+  RayTrace's servers. Members of your organization can see them; other
+  organizations can't.
+- **Your sign-in** is kept in the macOS Keychain or the Linux secret service (or a
+  file only you can read where neither exists). `raytrace auth logout` removes
+  it. Cloud commands ask you to sign in again after 2 days without cloud use.
 
-- `raytrace sandbox create` uploads your project (see
-  [what is uploaded](#cloud-sandboxes-preview)) to RayTrace.
-- Inside a sandbox, the prompts, model requests and answers, tool calls and the
-  commands that run are recorded on RayTrace's servers for your organization.
-  Members of your organization can see them at app.raytracer.si; other
-  organizations cannot.
-- `raytrace auth login` keeps your sign-in in the macOS Keychain or the Linux
-  secret service (a file readable only by you where neither is available), and
-  `raytrace auth logout` removes it. Cloud commands ask you to sign in again
-  after 2 days with no cloud use (any cloud command resets that clock); the
-  command then continues where it left off. Local recording never asks.
-- What RayTrace records locally stays in `~/.raytrace`, readable only by you.
-  Its local API takes the token in `~/.raytrace/api-token`, so another account
-  on the machine cannot read your traces or spend your OpenRouter key through
-  it. `raytrace open` signs your browser in with a one-time link.
+## Troubleshooting
+
+- **The MCP server doesn't show up in my editor:** restart the editor after
+  adding it. In Claude Code, `claude mcp list` shows whether it's connected.
+  Check that `node --version` is 22.13 or newer.
+- **No terminal opened after "connect":** the agent's reply has the command to
+  paste, such as `raytrace connect my-box --claude`. On macOS, allow your editor
+  to control your terminal app in **System Settings → Privacy & Security →
+  Automation**.
+- **The first local sandbox is taking long:** setting up the VM takes a few
+  minutes. Ask the agent for the sandbox status, or read
+  `~/.raytrace/logs/mcp-create-<name>-*.log`. The whole VM log is in
+  `~/.raytrace/logs/sandbox-vm.log`.
+- **`sandbox create --local` says the machine isn't ready:** each line says
+  what's missing and how to fix it; `raytrace doctor` shows the same. Port 8798
+  in use usually means another Lima VM is running (`limactl list`).
+- **A local sandbox's sessions don't show in the dashboard:** restart RayTrace
+  with `raytrace stop && raytrace start`.
+- **The dashboard says this browser isn't signed in:** run `raytrace open`.
+- **`Cannot reach RayTrace at https://api.raytracer.si`:** check your
+  connection. Networks that inspect HTTPS, such as some company Wi-Fi, can block
+  it.
+- **A sandbox isn't found:** `raytrace auth status` shows which account you're
+  signed in as. Sandboxes belong to the account that made them.
 
 ## Uninstall
 
 ```sh
-raytrace sandbox destroy <sandbox-id>   # any sandboxes you no longer need
+raytrace sandbox destroy <id or name>   # any sandboxes you no longer need
+raytrace uninstall --purge              # local sandboxes: deletes the VM and ~/.raytrace
 raytrace auth logout
 npm uninstall -g @raytrace-cli/cli
+claude mcp remove raytrace -s user      # if you added the MCP server to Claude Code
 ```
 
-Upgrading from 0.4 or earlier: the first start of the new version upgrades
-`~/.raytrace/evidence.db` in place (your recorded sessions are kept), and older
-versions cannot open it afterwards.
-
-With local sandboxes, run `raytrace uninstall --purge` before removing the
-package: it deletes the local sandbox VM and everything in `~/.raytrace`
-(recorded sessions, archived logs, and the Lima RayTrace downloaded). Without
-`--purge`, remove the VM yourself with `limactl delete --force raytrace`.
-
-If you set up local recording with an earlier version, run
-`raytrace uninstall` before removing the package so Claude Code is not left
-with a hook that points at a missing command.
-
-## Troubleshooting
-
-- **`Cannot reach RayTrace at https://api.raytracer.si`:** check your
-  connection. Networks that inspect HTTPS, such as some company Wi-Fi, can
-  block it; try another network.
-- **Sign-in or sandbox creation fails:** run `raytrace auth status`, and
-  `raytrace auth login` again if needed. Create the sandbox from inside a Git
-  repository.
-- **A local sandbox's Claude Code sessions do not show in the dashboard:**
-  RayTrace's proxy may be from before local sandboxes. Restart it:
-  `raytrace stop && raytrace start`. `sandbox create --local` warns about this.
-- **The dashboard says this browser is not signed in:** run `raytrace open`.
-  Each browser signs in once, for 30 days; a bookmark to the dashboard then
-  keeps working.
-- **`sandbox create --local` says the machine is not ready:** each line names
-  what is missing and how to fix it; `raytrace doctor` shows the same. Port
-  8798 in use usually means another Lima VM is running (`limactl list`).
-- **The VM fails to start or set up:** the last lines are shown; the whole
-  log is in `~/.raytrace/logs/sandbox-vm.log`.
-- **`raytrace connect` asks for a sandbox id:** run `raytrace sandbox list` and
-  pass the one you want. The id is optional only when you have one sandbox.
+Without `--purge`, remove the VM yourself with `limactl delete --force raytrace`.
 
 ## Developing
 
 ```sh
 npm install
-npm run build             # dashboard -> dist/dashboard
-npm run dashboard:dev     # dashboard with hot reload, API from a running RayTrace
+npm run build                     # dashboard -> dist/dashboard
+npm run dashboard:dev             # dashboard with hot reload, API from a running RayTrace
 npm run typecheck
+npm test
 node bin/raytrace.mjs <command>   # run the CLI from this folder
-npm pack                  # build the package as it would be published
+```
+
+To use your checkout as the MCP server in Claude Code:
+
+```sh
+claude mcp add --scope user raytrace -- node /path/to/raytrace-cli/bin/raytrace.mjs mcp
 ```
 
 To try it without touching your real setup, give it its own home and port:
