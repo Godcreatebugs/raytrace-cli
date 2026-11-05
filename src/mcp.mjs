@@ -23,7 +23,7 @@ import { call, hasApiKeyOverride } from './api.mjs';
 import { formatCreditDeadline } from './beta.mjs';
 import { findLima, LIMA_VERSION } from './lima.mjs';
 import { isLocal, localSandboxes, promptsLink, registry, sandboxName } from './local-sandbox.mjs';
-import { paths } from './paths.mjs';
+import { install, paths } from './paths.mjs';
 import { openTerminal, shellQuote } from './terminal.mjs';
 import { AGENTS } from './agents.mjs';
 import { checkId, creditPlan, isCreditRefusal, listProject, liveSandboxes, packArchive, repoRoot, upload } from './sandbox.mjs';
@@ -487,8 +487,8 @@ async function destroyLocal(ref, deleteLogs, uploadFirst) {
 
 // ------------------------------------------------------------- connecting
 
-/** How the user would type `raytrace` themselves: the installed command, or npx when there is none. */
-const typed = () => (spawnSyncQuiet('sh', ['-c', 'command -v raytrace']) ? 'raytrace' : 'npx -y @raytrace-cli/cli');
+/** How the user would type `raytrace` themselves: the installed command, or npx (uvx from pip) when there is none. */
+const typed = () => (spawnSyncQuiet('sh', ['-c', 'command -v raytrace']) ? 'raytrace' : install.run);
 function spawnSyncQuiet(program, args) {
   try { return spawnSync(program, args, { stdio: 'ignore' }).status === 0; } catch { return false; }
 }
