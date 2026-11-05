@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { AGENTS } from './agents.mjs';
 import { paths } from './paths.mjs';
 import { portInUse, runningPid, start as startProxy, stop as stopProxy } from './proxy-process.mjs';
 import { portOf, readConfig } from './config.mjs';
@@ -343,15 +344,15 @@ export async function destroy(ref, flags, { ask, interactive }) {
 /** The local dashboard's Prompts, only those that ran in this sandbox. */
 export const promptsLink = (id) => `http://127.0.0.1:${portOf(readConfig())}/?box=${encodeURIComponent(id)}`;
 
-export async function shell(id, { claude = false } = {}) {
+export async function shell(id, { agent } = {}) {
   id = pickId(id);
   ensureVm();
   await ensureBridge();
   const { name } = registry()[id];
-  say(claude ? `Connected to ${name}, starting Claude Code without permission prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.`
+  say(agent ? `Connected to ${name}, starting ${AGENTS[agent].name} without approval prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.`
     : `Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
   say(`Its prompts, and only its: ${promptsLink(id)}`);
   say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');
-  projects(['shell', id, ...(claude ? ['--claude'] : [])], { inherit: true, check: false });
+  projects(['shell', id, ...(agent ? ['--agent', agent] : [])], { inherit: true, check: false });
   say(`\nLeft ${name}. It is still running. Back in: raytrace connect ${name}   Stop it: raytrace sandbox stop ${name}`);
 }
