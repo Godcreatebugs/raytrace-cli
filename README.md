@@ -119,8 +119,11 @@ window inside tmux, a new iTerm window or WezTerm tab; otherwise a new Terminal
 window on macOS (also from VS Code, whose built-in terminal cannot be opened from
 outside), the desktop's terminal on Linux, or Windows Terminal. macOS asks once
 whether your terminal may be controlled. If no terminal can be opened, the agent
-gives you the command: `raytrace connect <id or name> --claude`. The first time
-in each sandbox, Claude Code asks you to sign in.
+gives you the command: `raytrace connect <id or name> --claude`. Claude Code runs
+there with `--dangerously-skip-permissions`: it does not stop to ask before each
+command, because the sandbox is what contains it, and everything it does is
+recorded. Files the project's owner restricted stay locked. The first time in
+each sandbox, Claude Code asks you to sign in and to accept that mode.
 
 **Running commands from the chat.** `run_command` starts a shell command in the
 sandbox's `/workspace` (up to 4 at a time, 120 s by default, at most 1,800 s) and

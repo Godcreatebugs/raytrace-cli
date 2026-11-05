@@ -284,11 +284,11 @@ export async function shell(id, flags = {}) {
       });
     });
     req.on('upgrade', (_response, socket, head) => {
-      say(flags.claude ? `Connected to ${id}, starting Claude Code; when it exits you are in the sandbox's shell. The sandbox keeps running.\n`
+      say(flags.claude ? `Connected to ${id}, starting Claude Code without permission prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.\n`
         : `Connected to ${id}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.\n`);
       if (head.length) stdout.write(head);
       // The API's shell takes no command: Claude Code is started by typing it, which the terminal holds until the shell reads it.
-      if (flags.claude) socket.write('claude\r');
+      if (flags.claude) socket.write('claude --dangerously-skip-permissions\r');
       stdin.setRawMode(true);
       stdin.resume();
       stdin.pipe(socket);

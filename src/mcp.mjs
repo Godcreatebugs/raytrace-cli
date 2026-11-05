@@ -500,7 +500,7 @@ function openSandbox(ref, { claude = true } = {}) {
   const yourself = `${typed()} ${args.map(shellQuote).join(' ')}`;
   const message = opened.opened
     ? `Opened ${opened.how}, connected to ${ref}${claude ? ' with Claude Code starting in it' : ''}: the user works there, and the session is recorded. `
-      + `${claude ? 'The first time in a sandbox, Claude Code asks them to sign in. ' : ''}If the window did not appear, they can run: ${yourself}`
+      + `${claude ? 'Claude Code runs there without asking before each command (the sandbox contains it). The first time in a sandbox, it asks them to sign in and to accept that mode. ' : ''}If the window did not appear, they can run: ${yourself}`
     : `Could not open a terminal here (${opened.how}). Ask the user to open one and run: ${yourself}`;
   return { ...opened, message, command: yourself };
 }

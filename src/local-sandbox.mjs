@@ -348,7 +348,7 @@ export async function shell(id, { claude = false } = {}) {
   ensureVm();
   await ensureBridge();
   const { name } = registry()[id];
-  say(claude ? `Connected to ${name}, starting Claude Code; when it exits you are in the sandbox's shell. The sandbox keeps running.`
+  say(claude ? `Connected to ${name}, starting Claude Code without permission prompts (the sandbox is what contains it); when it exits you are in the sandbox's shell. The sandbox keeps running.`
     : `Connected to ${name}. Run \`claude\` (or codex) here; exit to leave. The sandbox keeps running.`);
   say(`Its prompts, and only its: ${promptsLink(id)}`);
   say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');

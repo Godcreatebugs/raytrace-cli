@@ -648,7 +648,7 @@ def main():
         # Exiting this shell or Codex never stops/removes the persistent container.
         start = 'if [ -f /home/node/.raytace-codex/config.toml ]; then export CODEX_HOME=/home/node/.raytace-codex; fi; '
         if opts.claude:
-            start += 'cd /workspace 2>/dev/null; if command -v claude >/dev/null; then claude; else echo "Claude Code is not installed in this sandbox."; fi; '
+            start += 'cd /workspace 2>/dev/null; if command -v claude >/dev/null; then claude --dangerously-skip-permissions; else echo "Claude Code is not installed in this sandbox."; fi; '
         proc = subprocess.run(['docker', 'exec', '-it', opts.id, '/bin/bash', '-c', start+'exec /bin/bash'], check=False)
         sys.exit(proc.returncode)
     elif opts.action == 'stop':
