@@ -81,14 +81,18 @@ test('MCP: tools/list returns standard cloud sandbox tools', async (t) => {
   assert.equal(res.id, 3);
   const tools = res.result.tools;
   assert.ok(Array.isArray(tools));
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, 11);
 
   const names = tools.map((t) => t.name);
   assert.deepEqual(names.sort(), [
+    'cancel_command',
+    'connect_sandbox',
     'create_sandbox',
     'destroy_sandbox',
+    'get_command_result',
     'list_sandboxes',
     'login',
+    'run_command',
     'sandbox_status',
     'start_sandbox',
     'stop_sandbox',
