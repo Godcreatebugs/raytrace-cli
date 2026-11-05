@@ -284,19 +284,23 @@ yet. Its commands, file changes and network connections are recorded.
 
 ## What you can do with a recorded session
 
-`raytrace open` opens your local dashboard; cloud sessions are at
-[app.raytracer.si](https://app.raytracer.si). Every page is about one prompt,
-and they link to each other, so you can go from "what did I ask" to "what
-actually ran" to "what if it had gone differently" in a couple of clicks.
+Cloud sessions are at [app.raytracer.si](https://app.raytracer.si), and
+`raytrace open` opens the same pages for your local sandboxes. Every page is
+about one prompt, and they link to each other, so you can go from "what did I
+ask" to "what actually ran" to "what if it had gone differently" in a couple of
+clicks. The screenshots below are from the cloud dashboard, with a session in
+the `raytrace-demo-shop` sandbox.
 
 ### Prompts: what you asked, and what came back
 
-<!-- screenshot: docs/images/prompts.png -->
+![The Prompts page: an activity calendar and the list of prompts, each tagged with where it ran, the model, tool calls and cost](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/prompts.jpg)
 
 Every prompt you gave the agent, newest first, with an activity calendar on
 top. Each row shows where it ran (Mac, local sandbox or cloud sandbox), the
 model, how many tool calls it took and what it cost. Open one to read the
 answer and a short recap of the run.
+
+![An opened prompt with its recap: what happened, probably why, and what is worth checking, with links to Tool calls, Sandbox evidence and Context](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/prompt-recap.jpg)
 
 - **Find a session again:** click a day in the calendar, or add
   `?box=<sandbox id>` to see a single sandbox's prompts.
@@ -315,7 +319,7 @@ agent says came back, plus tokens, time and cost at each step.
 
 ### Sandbox evidence: what actually ran
 
-<!-- screenshot: docs/images/sandbox-evidence.png -->
+![Sandbox evidence: each process the sandbox saw run, with its exit code, duration and severity, and a plain-English description](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/sandbox-evidence.jpg)
 
 What the agent *says* it ran is in Tool calls. This page is what the sandbox
 itself saw, recorded from outside the agent where it can't be turned off or
@@ -359,7 +363,7 @@ Use it to:
 
 ### Playground: rerun it differently, and compare
 
-<!-- screenshot: docs/images/playground.png -->
+![The Playground: pick a step, change the message, files, check command or model, and run forks](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/playground.jpg)
 
 Pick any step of a session and rerun from there with something changed: an
 earlier tool result removed or edited, a file in the project, the model, or the
@@ -377,7 +381,7 @@ unchanged.
 
 ### Story and Chain of thought: why it did what it did
 
-<!-- screenshot: docs/images/story.png -->
+![Chain of thought: a recap of the run, the likely reason for each step with its share, and what is worth checking](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/chain-of-thought.jpg)
 
 **Story** is the short version of a long run. It shows a timeline of only the
 steps that mattered, the single most consequential command pulled out at the
@@ -408,7 +412,7 @@ failures lately.
 
 ### Initial scan: guard the files that matter
 
-<!-- screenshot: docs/images/initial-scan.png -->
+![Initial scan: every file of the project grouped by risk level, with counts of watched and restricted files](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/initial-scan.jpg)
 
 When a project goes into a sandbox, every file is rated from 1 to 5 for how
 risky it is to change, with the reason. Secrets, migrations and deploy
@@ -419,6 +423,8 @@ changes, refused edits, reads, and commands that named them.
 
 - **Let the agent work freely** while keeping your migrations and CI config
   off-limits.
+
+![Initial scan alerts: watched files such as config/payment-keys.js being read, each seen by the kernel, with the tool that did it](https://raw.githubusercontent.com/Godcreatebugs/raytrace-cli/main/docs/images/initial-scan-alerts.jpg)
 - **Get told** when it touches what you care about.
 
 ### Sandboxes: where it all ran
