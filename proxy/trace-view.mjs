@@ -76,7 +76,9 @@ export function splitExchange(row, replayReason = () => undefined) {
   return steps;
 }
 export async function readTraces(db, { includeHistory = false, evidence = true, replayReason = () => undefined, turnId = null } = {}) {
-  const rows = (turnId && db?.turnExchanges ? await db.turnExchanges(turnId) : await db.exchangeRows({ history: includeHistory })).map(omitToolChunkIds);
+  let rows = (turnId && db?.turnExchanges ? await db.turnExchanges(turnId) : await db.exchangeRows({ history: includeHistory })).map(omitToolChunkIds);
+  const truncated=Boolean(turnId && rows.length>2000);
+  if(turnId) rows=rows.slice(0,2000);
   // Rows arrive already grouped: each carries its turn as trace_id and the
   // turn's prompt as promptTitle, decided once at capture (evidence-store.mjs).
   const groupedRows = rows;
@@ -86,14 +88,15 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
   // A tool call proposed in one captured exchange comes back as evidence (its
   // result) in a later one. Index call_id -> the exchange that first proposed it
   // so the UI can jump from "this evidence" to "the decision that produced it".
-  const origins = new Map();
+  const origins = [];
+  const originByCall = new Map();
   for (const row of exchangeRows) {
     const output = row.response?.payload?.output;
     if (!Array.isArray(output)) continue;
     for (const [outputIndex, item] of output.entries()) {
       if (item?.call_id && /function_call|tool_use|tool_call/i.test(item?.type || '')) {
         const scopedKey = `${row.session_id || ''}:${item.call_id}`;
-        if (!origins.has(scopedKey) || !origins.has(item.call_id)) {
+        {
           const args = item.arguments ?? item.input ?? item.function?.arguments ?? '';
           const info = {
             call_id: item.call_id,
@@ -108,8 +111,9 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
             category: callCategory(item.name, args),
             proposed: proposedCommand(args, item.name)
           };
-          if (!origins.has(scopedKey)) origins.set(scopedKey, info);
-          if (!origins.has(item.call_id)) origins.set(item.call_id, info);
+          origins.push(info);
+          // Reused IDs inside one session cannot identify a result reliably.
+          originByCall.set(scopedKey,originByCall.has(scopedKey)?null:info);
         }
       }
     }
@@ -117,13 +121,20 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
   const grouped = new Map();
   const shownResultsByTrace = new Map(); // trace_id -> Set(call_id) already rendered once
   for (const row of exchangeRows) {
-    const trace = grouped.get(row.trace_id) || { id: row.trace_id, provider: row.provider, model: row.request?.payload?.model || 'unknown model', title: promptAsWritten(row.promptTitle), promptRaw: row.promptTitle, startedAt: row.timestamp, status: row.turn_status || 'complete', events: [], evidence: [], requests: [] };
+    const trace = grouped.get(row.trace_id) || { id: row.trace_id, provider: row.provider, model: row.request?.payload?.model || 'unknown model', title: promptAsWritten(row.promptTitle), promptRaw: row.promptTitle, startedAt: row.timestamp, status: row.turn_status || 'complete', events: [], evidence: [], requests: [], ...(turnId ? {comparisonRequests:[],captureComplete:!truncated} : {}) };
     if (row.turn_status) trace.status = row.turn_status;
     const shownResults = shownResultsByTrace.get(row.trace_id) || new Set();
     // rtp- a project's sandbox; rtf- a Playground fork of one (playground.mjs).
     if (/^rt[pf]-[a-f0-9]{32}$/.test(row.session_id || '')) trace.sandboxId = row.session_id;
     if (/^rtf-[a-f0-9]{32}$/.test(row.session_id || '')) trace.forkId = row.session_id;
     shownResultsByTrace.set(row.trace_id, shownResults);
+    if(turnId) {
+      const payload=row.request?.payload ?? {};
+      trace.comparisonRequests.push({exchangeId:row.span_id,model:payload.model??null,
+        settings:Object.fromEntries(Object.entries(payload).filter(([key])=>!['input','messages','instructions','system','tools','stream','store','metadata','previous_response_id','conversation','client_request_id'].includes(key))),
+        instructions:payload.instructions??payload.system??null,tools:payload.tools??[],
+        context:evidenceFor(payload,row.span_id).filter(item=>item.kind!=='tool result')});
+    }
     trace.requests.push({ id: row.span_id, model: row.request?.payload?.model || 'unknown', startedAt: row.timestamp, completedAt: row.completed_at || null, ...(row.metrics || requestMetrics(row)) });
     // Rows are oldest-first, so the last request that produced text is the
     // turn's final answer, and the last completion is when the turn ended.
@@ -131,7 +142,7 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
     try { const text = outcome(row.response?.payload || {}).text; if (text) trace.answer = text; } catch { /* incomplete capture */ }
     trace.events.push(...splitExchange(row, replayReason).map((step) => {
       if (!step.title.startsWith('Tool result:')) return step;
-      const raw = JSON.parse(step.raw); const origin = origins.get(`${row.session_id || ''}:${raw.call_id}`) || origins.get(raw.call_id);
+      const raw = JSON.parse(step.raw); const origin = originByCall.get(`${row.session_id || ''}:${raw.call_id}`);
       // The tool result carries only a call_id and output, never the tool's
       // name — fall back to the exchange that originally proposed the call,
       // where the real name is known, instead of showing the raw id.
@@ -153,7 +164,7 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
       return false;
     }));
     for (const item of evidence ? evidenceFor(row.request?.payload, row.span_id) : []) {
-      const origin = item.call_id ? origins.get(item.call_id) : null;
+      const origin = item.call_id ? originByCall.get(`${row.session_id || ''}:${item.call_id}`) : null;
       trace.evidence.push({ ...item, origin: origin && origin.exchange_id !== row.span_id ? origin : null });
     }
     grouped.set(row.trace_id, trace);
@@ -167,7 +178,7 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
     const shownResults = shownResultsByTrace.get(trace.id) || new Set();
     const traceOrigins = [...origins.values()].filter((origin) => origin.trace_id === trace.id);
     for (const origin of traceOrigins) {
-      if (!shownResults.has(origin.call_id)) {
+      if (!shownResults.has(origin.call_id) && originByCall.get(`${origin.session_id || ''}:${origin.call_id}`)===origin) {
         const reported = db?.toolCallResult ? await db.toolCallResult(origin.call_id, { exchangeId: origin.exchange_id, sessionId: origin.session_id || trace.sandboxId }) : null;
         if (reported) {
           const rawItem = (reported && typeof reported === 'object')
@@ -303,6 +314,11 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
       if (!first.has(key)) { first.set(key, item.id); return item; }
       return { id: item.id, exchange_id: item.exchange_id, index: item.index, kind: item.kind, label: item.label, call_id: item.call_id ?? null, content_of: first.get(key) };
     });
+  }
+  for(const trace of result) {
+    if(turnId && ['open','running'].includes(trace.status))trace.captureComplete=false;
+    trace.captureHealth=await db.captureHealth?.(trace.sandboxId ?? trace.id,
+    {since:Date.parse(trace.startedAt),until:Date.parse(trace.endedAt)});
   }
   return result;
 }

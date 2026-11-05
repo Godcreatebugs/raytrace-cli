@@ -4,12 +4,13 @@ import { readFileSync, realpathSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 // Forward steps for databases created by an older schema, keyed by the
 // version they upgrade FROM. Each must reproduce the schema files exactly:
 // the structure check below still runs afterwards, so a step that drifts from
 // the .sql text is refused rather than silently accepted.
 const MIGRATIONS = {
+  6: readFileSync(new URL('./schema/capture_health.sql', import.meta.url), 'utf8'),
   2: `CREATE TABLE call_assessments (
  key TEXT NOT NULL PRIMARY KEY,
  call_id TEXT,
@@ -43,7 +44,7 @@ CREATE INDEX workspace_snapshots_call ON workspace_snapshots(call_id);`,
 /** The version from which a database holds catalog version 2. */
 const CATALOG_SINCE = 5;
 export const CATALOG_VERSION_ID = 'syscall-catalog-v2';
-const modules = ['agent_intent.sql', 'runtime_evidence.sql', 'classification.sql', 'file_context.sql', 'shared_storage.sql', 'auxiliary.sql', 'search.sql'];
+const modules = ['agent_intent.sql', 'runtime_evidence.sql', 'classification.sql', 'file_context.sql', 'shared_storage.sql', 'auxiliary.sql', 'search.sql', 'capture_health.sql'];
 const fileLabels = [
   ['source_code', 'Source code', 'Program source files.'],
   ['configuration', 'Configuration', 'Configuration for applications or tools.'],

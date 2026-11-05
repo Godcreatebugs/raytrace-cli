@@ -153,6 +153,9 @@ export type AttributionState = { status: 'loading' } | { status: 'ready'; attrib
 export type TraceBlock = { exchangeId: string; number: number; completion?: TraceEvent; items: { event: TraceEvent; index: number }[] };
 
 export type Trace = {
+  promptRaw?:string;
+  captureComplete?:boolean;
+  captureHealth?:CaptureHealth;
   sandboxId?: string;
   /** Set on a Playground fork's run: shown from the Playground, not in Prompts. */
   forkId?: string;
@@ -262,4 +265,12 @@ export type Fork = {
   check?: { command: string; status: 'pending' | 'running' | 'passed' | 'failed' | 'timed_out' | 'error' | 'skipped';
     exit_code: number | null; output: string; duration_ms: number | null } | null;
   error: string | null;
+};
+
+export type CaptureHealth = {
+  live:'reporting'|'catching_up'|'not_reporting'|'ended'|'unknown'|'not_applicable';
+  history:'no_known_gaps'|'gaps_detected'|'unknown'|'not_applicable';
+  issues:{reason:string;eventId?:number;at:number;dropped?:number|null}[];
+  capabilities?:{processes:boolean;files:boolean;network:boolean}|null;
+  lastHeartbeatAt:number|null;checkedAt:number;scope:string;
 };

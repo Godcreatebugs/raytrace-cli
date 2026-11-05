@@ -1,3 +1,4 @@
+import { captureHealth, sourceStreamId } from './capture-health.mjs';
 /**
  * RayTrace storage layer over the evidence database (proxy/schema/*.sql,
  * created and verified by init-evidence-db.mjs). This module is the only
@@ -403,9 +404,12 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
     WHERE ${ROUTES} ${scoped ? 'AND e.session_id = ?' : ''} ORDER BY e.started_at_ms DESC LIMIT ?`);
   const recentAll = turnExchangesQuery(false);
   const recentBySession = turnExchangesQuery(true);
+  const recentByExternalId = q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
+    JOIN agent_sessions s ON s.id = e.session_id JOIN agent_turns t ON t.id = e.turn_id
+    WHERE ${ROUTES} AND s.external_session_id = ? ORDER BY e.started_at_ms DESC LIMIT ?`);
   const exchangesForTurn = q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
     JOIN agent_sessions s ON s.id = e.session_id JOIN agent_turns t ON t.id = e.turn_id
-    WHERE ${ROUTES} AND (e.turn_id = ? OR t.id = ? OR e.id = ?) ORDER BY e.started_at_ms ASC, e.id ASC`);
+    WHERE ${ROUTES} AND (e.turn_id = ? OR t.id = ? OR e.id = ?) ORDER BY e.started_at_ms ASC, e.id ASC LIMIT ?`);
   const selectExchange = q(`SELECT ${EXCHANGE_COLUMNS} FROM agent_exchanges e
     JOIN agent_sessions s ON s.id = e.session_id LEFT JOIN agent_turns t ON t.id = e.turn_id WHERE e.id = ?`);
 
@@ -444,7 +448,7 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
   /** Appends one collector event, once: the stream is the container and the
    * sequence is the collector's own event id, so a replayed event is a no-op. */
   function recordEvent({ sandboxId, processId = null, raw }) {
-    const streamId = `gvisor:${sandboxId}`;
+    const streamId = sourceStreamId(sandboxId, raw);
     const sequence = Number(raw?.event_id);
     if (!Number.isInteger(sequence) || sequence < 0) return null;
     const existing = selectEventId.get(streamId, sequence);
@@ -466,16 +470,17 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
 
     /** Captured exchanges that belong to a turn, newest-first bounded,
      * returned oldest-first. Scoped to the latest session unless `history`. */
-    exchangeRows({ history = false, limit = history ? 2000 : 400 } = {}) {
+    exchangeRows({ history = false, limit = history ? 2000 : 400, externalSession = null } = {}) {
       const session = history ? null : latestSession.get()?.session_id ?? null;
-      const rows = session ? recentBySession.all(session, limit) : recentAll.all(limit);
+      const rows = externalSession ? recentByExternalId.all(externalSession, limit)
+        : session ? recentBySession.all(session, limit) : recentAll.all(limit);
       return rows.map(hydrate).reverse();
     },
 
     /** All captured exchanges belonging to one turn (trace), ordered oldest-first. */
-    turnExchanges(turnId) {
+    turnExchanges(turnId, {limit = 2001} = {}) {
       if (!turnId) return [];
-      return exchangesForTurn.all(turnId, turnId, turnId).map(hydrate);
+      return exchangesForTurn.all(turnId, turnId, turnId, limit).map(hydrate);
     },
 
     findExchange(exchangeId) {
@@ -483,6 +488,35 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
       if (!record) return undefined;
       const row = hydrate(record);
       return { payload: row.request.payload, response: row.response.payload, provider: row.provider, route: row.route, session_id: row.session_id };
+    },
+
+    captureCheckpoint(containerId, sourceId) {
+      return q('SELECT cursor FROM runtime_capture_checkpoints WHERE sandbox_id=? AND source_id=?').get(containerId, sourceId)?.cursor ?? 0;
+    },
+    saveCaptureProgress({containerId, projectId, sourceId, cursor, coverage}) {
+      transaction(() => {
+        ensureSandbox(containerId, projectId);
+        const previous=q('SELECT body_json FROM runtime_capture_checkpoints WHERE sandbox_id=? AND source_id=?').get(containerId,sourceId);
+        const before=previous?JSON.parse(previous.body_json):{};
+        coverage={...coverage,forwarded_through_ms:Math.max(before.forwarded_through_ms??0,coverage?.forwarded_through_ms??0)||null};
+        for (const stream of coverage?.streams ?? []) q(`INSERT INTO runtime_capture_streams VALUES(?,?,?)
+          ON CONFLICT(id) DO UPDATE SET body_json=excluded.body_json`).run(`${containerId}:${stream.collector_id}:${stream.id}`, containerId, JSON.stringify({...stream,session_id:projectId}));
+        q(`INSERT INTO runtime_capture_checkpoints VALUES(?,?,?,?) ON CONFLICT(sandbox_id,source_id)
+          DO UPDATE SET cursor=excluded.cursor,body_json=excluded.body_json`).run(containerId, sourceId, cursor, JSON.stringify(coverage));
+      });
+    },
+    recordCaptureEvent({containerId, projectId, raw}) {
+      return transaction(() => recordEvent({sandboxId: ensureSandbox(containerId, projectId), raw}));
+    },
+    captureHealth(sessionId, {since, until, now} = {}) {
+      const boxes = q("SELECT id FROM runtime_sandboxes WHERE project_id=? OR id IN (SELECT sandbox_id FROM runtime_capture_streams WHERE json_extract(body_json,'$.session_id')=?)").all(sessionId,sessionId).map(r=>r.id);
+      const streams=[], checkpoints=[], events=[];
+      for(const box of boxes) {
+        streams.push(...q('SELECT body_json FROM runtime_capture_streams WHERE sandbox_id=?').all(box).map(r=>JSON.parse(r.body_json)));
+        checkpoints.push(...q('SELECT body_json,cursor FROM runtime_capture_checkpoints WHERE sandbox_id=?').all(box).map(r=>({...JSON.parse(r.body_json),cursor:r.cursor})));
+        events.push(...q("SELECT payload_json FROM runtime_events WHERE sandbox_id=? AND event_kind IN ('collection_gap','collection_error','collector_disconnected')").all(box).map(r=>JSON.parse(r.payload_json)));
+      }
+      return captureHealth({sessionId,streams,checkpoints,events,since,until,now});
     },
 
     // ---- runtime evidence writers (the gVisor forwarder)
@@ -612,7 +646,8 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
       return Object.values(q(`SELECT (SELECT count(*) FROM agent_exchanges) AS exchanges,
           (SELECT count(*) FROM agent_tool_calls WHERE reported_result_sha IS NOT NULL) AS results,
           (SELECT count(*) FROM runtime_events) AS events, (SELECT count(*) FROM runtime_attributions) AS attributions,
-          (SELECT count(*) FROM workspace_snapshots) AS snapshots`).get()).join(':');
+          (SELECT count(*) FROM workspace_snapshots) AS snapshots,
+          (SELECT COALESCE(MAX(json_extract(body_json,'$.checked_at_ms')),0) FROM runtime_capture_checkpoints) AS health`).get()).join(':');
     },
 
     // ---- workspace snapshots (a sandboxed Claude Code's hook)
@@ -895,6 +930,8 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
           `DELETE FROM runtime_syscall_calls WHERE sandbox_id IN (${boxes})`,
           `DELETE FROM runtime_events WHERE sandbox_id IN (${boxes})`,
           `DELETE FROM runtime_processes WHERE sandbox_id IN (${boxes})`,
+          `DELETE FROM runtime_capture_streams WHERE sandbox_id IN (${boxes})`,
+          `DELETE FROM runtime_capture_checkpoints WHERE sandbox_id IN (${boxes})`,
           `DELETE FROM runtime_sandboxes WHERE project_id IN (${marks})`,
           `DELETE FROM agent_context_items WHERE exchange_id IN (${exchanges})`,
           `DELETE FROM agent_tool_calls WHERE exchange_id IN (${exchanges})`,

@@ -59,9 +59,9 @@ function result(db, id, callId, extra = {}) {
     effect_status: 'confirmed', reason: 'Test fixture, not automatic classification', classified_at_ms: 101, ...extra });
 }
 
-test('33 tables, catalog seeds and repeat initialization preserve evidence', () => isolated((db, path) => {
+test('35 tables, catalog seeds and repeat initialization preserve evidence', () => isolated((db, path) => {
   fixtures(db); call(db, 'delete');
-  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().n, 33); // 20 evidence + 7 auxiliary + search_events + FTS5 (virtual + 4 shadows)
+  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'").get().n, 35); // 20 evidence + 7 auxiliary + search_events + FTS5 (virtual + 4 shadows)
   for (const [table, count] of [['classification_impact_levels', 4], ['classification_categories', 34], ['classification_syscall_rules', 353], ['file_labels', 6], ['classification_results', 0]]) {
     assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, count);
   }
@@ -207,7 +207,7 @@ test('initializer rejects unrelated/changed databases and rolls back on verifica
 test('a version-2 database is upgraded in place to add call_assessments, keeping its data', () => isolated((db, path) => {
   // Recreate exactly what a v2 database looked like: no call_assessments, and
   // none of the later tables either.
-  db.exec('DROP INDEX call_assessments_call; DROP TABLE call_assessments; DROP TABLE workspace_snapshots; DROP TRIGGER search_events_ai; DROP TRIGGER search_events_ad; DROP TRIGGER search_events_au; DROP TABLE search_fts; DROP TABLE search_events; PRAGMA user_version=2');
+  db.exec('DROP TABLE runtime_capture_checkpoints; DROP TABLE runtime_capture_streams; DROP INDEX call_assessments_call; DROP TABLE call_assessments; DROP TABLE workspace_snapshots; DROP TRIGGER search_events_ai; DROP TRIGGER search_events_ad; DROP TRIGGER search_events_au; DROP TABLE search_fts; DROP TABLE search_events; PRAGMA user_version=2');
   insert(db, 'command_descriptions', { key: 'k', command: 'ls', description: 'listed files', created_at_ms: 1 });
   const result = initializeEvidenceDatabase(path);
   assert.equal(result.schemaVersion, SCHEMA_VERSION);
@@ -230,4 +230,11 @@ test('same catalog version with changed content is rejected without rewriting hi
   assert.equal(db.prepare('SELECT count(*) n FROM classification_syscall_rules').get().n, 353);
   // A rollback releases the write transaction even while this reader stays open.
   db.exec('BEGIN IMMEDIATE; ROLLBACK');
+}));
+
+test('a version-6 database upgrades recording metadata without inventing healthy history',()=>isolated((db,path)=>{
+ db.exec('DROP TABLE runtime_capture_checkpoints; DROP TABLE runtime_capture_streams; PRAGMA user_version=6');
+ initializeEvidenceDatabase(path);
+ assert.equal(db.prepare('PRAGMA user_version').get().user_version,7);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM runtime_capture_streams').get().n,0);
 }));

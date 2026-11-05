@@ -1,7 +1,7 @@
-"""Loopback-only, read-only evidence viewer, forwarded by Lima to the Mac.
-
-A forwarded port is open to every account on the Mac, so each request carries
-the token the CLI writes here (src/local-sandbox.mjs). No token, no evidence.
+"""Loopback-only, read-only evidence viewer, forwarded by Lima to the Mac and
+tunnelled to the control plane. A forwarded port is open to every account on
+the machine at its end, so each request carries the token in this file. No
+token, no evidence.
 """
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,23 +47,59 @@ def event_page(db, query):
         clauses.append('received_ms >= ?'); params.append(since)
     if until:
         clauses.append('received_ms <= ?'); params.append(until)
-    if after:
+    if 'after' in query:
         clauses.append('id > ?'); params.append(after)
     elif before:
         clauses.append('id < ?'); params.append(before)
     if query.get('processes', [''])[0] == '1':
-        clauses.append("kind IN ('exec_succeeded','exec_failed','process_exit','collection_gap','collection_error','collector_disconnected')")
+        clauses.append("kind IN ('exec_succeeded','exec_failed','process_exit','collection_gap','collection_error','collector_connected','collector_disconnected')")
     where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
-    order = 'ASC' if after else 'DESC'
-    rows = db.execute('SELECT id,body FROM runtime_events'+where+' ORDER BY id '+order+' LIMIT ?', (*params, limit+1)).fetchall()
+    order = 'ASC' if 'after' in query else 'DESC'
+    rows = db.execute('SELECT id,body,container_id FROM runtime_events'+where+' ORDER BY id '+order+' LIMIT ?', (*params, limit+1)).fetchall()
     events = []
-    for identifier, body in rows[:limit]:
+    for identifier, body, bound_container in rows[:limit]:
         event=json.loads(body); event.pop('raw_packet_base64',None)
-        event['event_id']=identifier; events.append(event)
-    page = {'events':events,'next_before':None if after else (rows[limit-1][0] if len(rows)>limit else None)}
-    if after:
+        event['event_id']=identifier; event['container_id']=bound_container; events.append(event)
+    page = {'events':events,'next_before':None if 'after' in query else (rows[limit-1][0] if len(rows)>limit else None)}
+    if 'after' in query:
         page['next_after'] = rows[limit-1][0] if len(rows) > limit else None
+    # Metadata comes from the same selected container and time interval,
+    # independently of pagination or the processes-only display filter.
+    page['coverage'] = coverage_page(db, query)
+    page['gaps'] = page['coverage']['gaps']
     return page
+
+
+def coverage_page(db, query):
+    container = query.get('container', [''])[0]
+    since, until = (int(query.get(key, ['0'])[0]) for key in ('since', 'until'))
+    clauses, params = [], []
+    for sql, value in [('container_id=?', container), ('received_ms>=?', since), ('received_ms<=?', until)]:
+        if value:
+            clauses.append(sql); params.append(value)
+    where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+    gap_clauses, gap_params = ["kind IN ('collection_gap','collection_error')"], []
+    if container:
+        gap_clauses.append('container_id=?'); gap_params.append(container)
+    if since:
+        gap_clauses.append('received_ms>=?'); gap_params.append(since)
+    if until:
+        gap_clauses.append("COALESCE(json_extract(body,'$.gap_from_ms'),received_ms)<=?"); gap_params.append(until)
+    gaps = db.execute('SELECT COUNT(*) FROM runtime_events WHERE ' + ' AND '.join(gap_clauses), gap_params).fetchone()[0]
+    latest = db.execute('SELECT COALESCE(MAX(id),0) FROM runtime_events' + (' WHERE container_id=?' if container else ''), (container,) if container else ()).fetchone()[0]
+    result = {'version': 1, 'container_id': container, 'gaps': gaps, 'latest': latest, 'streams': [], 'checked_at_ms': int(time.time()*1000)}
+    try:
+        state = db.execute('SELECT instance_id,heartbeat_ms FROM collector_state WHERE id=1').fetchone()
+        if state:
+            result.update(source_instance_id=state[0], heartbeat_ms=state[1])
+        rows = db.execute('SELECT id,collector_id,container_id,started_ms,ended_ms,heartbeat_ms,dropped,errors,capabilities_json FROM capture_streams WHERE container_id=? ORDER BY started_ms', (container,)).fetchall()
+        result['streams'] = [dict(zip(('id','collector_id','container_id','started_ms','ended_ms','heartbeat_ms','dropped','errors','capabilities'), row)) for row in rows]
+        for stream in result['streams']:
+            stream['capabilities'] = json.loads(stream['capabilities'])
+    except sqlite3.OperationalError:
+        pass  # Old collectors remain readable, with unknown health.
+    return result
+
 
 def fact_page(db, query):
     """Facts the engine drew (engine.py), oldest first after `after`: the
@@ -90,7 +126,7 @@ PAGE = '''<!doctype html><meta charset="utf-8"><title>RayTrace runtime evidence<
 <table><thead><tr><th>Event</th><th>PID / parent</th><th>Executable / arguments / result</th></tr></thead><tbody id="events"></tbody></table>
 <script>
 const select=document.getElementById('jobs');
-async function refresh(){try{const response=await fetch('events');if(!response.ok)throw Error('Collector unavailable');const data=await response.json();
+async function refresh(){try{const response=await fetch('events'+(select.value?'?container='+encodeURIComponent(select.value):''));if(!response.ok)throw Error('Collector unavailable');const data=await response.json();
 const chosen=select.value;select.replaceChildren(new Option('All sandboxes and collector health',''));for(const id of data.containers)select.add(new Option(id.slice(0,16),id));select.value=chosen;
 const rows=data.events.filter(e=>!select.value||e.container_id===select.value);
 document.getElementById('status').textContent='Latest '+rows.length+' events (up to 500). '+data.gaps+' recorded collection errors/gaps.';
@@ -125,13 +161,21 @@ class Handler(BaseHTTPRequestHandler):
             except (sqlite3.Error, ValueError):
                 self.send_error(503, 'Evidence database unavailable')
                 return
+        elif urlparse(self.path).path == '/coverage':
+            try:
+                with sqlite3.connect('file:/var/lib/raytace/runtime.db?mode=ro', uri=True) as db:
+                    body = json.dumps(coverage_page(db, parse_qs(urlparse(self.path).query))).encode()
+                mime = 'application/json'
+            except (sqlite3.Error, ValueError):
+                self.send_error(503, 'Recording health unavailable')
+                return
         elif urlparse(self.path).path == '/events':
             try:
                 with sqlite3.connect('file:/var/lib/raytace/runtime.db?mode=ro', uri=True) as db:
                     page = event_page(db, parse_qs(urlparse(self.path).query))
                     containers = [r[0] for r in db.execute("SELECT DISTINCT container_id FROM runtime_events WHERE container_id != ''")]
-                    gaps = db.execute("SELECT COUNT(*) FROM runtime_events WHERE kind IN ('collection_error','collection_gap')").fetchone()[0]
-                body = json.dumps({**page, 'containers': containers, 'gaps': gaps, 'coverage':'Selected process events; completeness not certified'}).encode()
+                    gaps = page['gaps']
+                body = json.dumps({**page, 'containers': containers, 'gaps': gaps, 'coverage':page['coverage']}).encode()
                 mime = 'application/json'
             except (sqlite3.Error, ValueError):
                 self.send_error(503, 'Evidence database unavailable')
