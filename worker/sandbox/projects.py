@@ -186,7 +186,7 @@ def lock(root, path, on):
     finally:
         os.close(at)
 
-def guardrails(sid, state, restricted=None, watched=None):
+def guardrails(sid, state, restricted=None, watched=None, blocked=None):
     """Applies a sandbox's restricted files: the new list, or the stored one
     again. The Claude Code hook gets the list at once and refuses the edit
     with the reason. The lock that holds for every tool is put on only while
@@ -194,8 +194,9 @@ def guardrails(sid, state, restricted=None, watched=None):
     of a file while it runs, and a file locked under it stops being readable.
     A file no longer restricted is unlocked now. `watched` are the files whose
     owner wants to hear of a read or a change: the hook reports an attempt on
-    them and nothing is locked. Returns {hook: the hook has the list,
-    read_only: the files locked}."""
+    them and nothing is locked. `blocked` are the programs the hook refuses
+    to start (None keeps the stored list). Returns {hook: the hook has the
+    list, read_only: the files locked}."""
     GUARDRAILS.mkdir(parents=True, exist_ok=True, mode=0o700)
     stored = GUARDRAILS / (sid+'.json')
     kept = json.loads(stored.read_text()) if stored.exists() else {}
@@ -204,14 +205,16 @@ def guardrails(sid, state, restricted=None, watched=None):
         restricted = before
     if watched is None:
         watched = kept.get('watched', [])
+    if blocked is None:
+        blocked = kept.get('blocked', [])
     root = subprocess.check_output(['docker', 'volume', 'inspect', '-f', '{{.Mountpoint}}', sid+'-workspace'], text=True).strip()
     running = state['State']['Running']
     for path in set(before) - set(restricted):
         lock(root, path, False)
     read_only = [path for path in restricted if lock(root, path, None if running else True)]
-    lists = json.dumps({'restricted': restricted, 'watched': watched})
+    lists = json.dumps({'restricted': restricted, 'watched': watched, 'blocked': blocked})
     stored.write_text(lists)
-    if running and (restricted or before or watched or kept.get('watched')):
+    if running and (restricted or before or watched or kept.get('watched') or blocked or kept.get('blocked')):
         write_as_root(sid, GUARDRAILS_IN_SANDBOX, lists.encode())
     return {'hook': bool(running), 'read_only': read_only}
 
@@ -612,7 +615,12 @@ def main():
             if not isinstance(sent.get(key), list) or len(sent[key]) > cap:
                 raise ValueError('Invalid '+key+' list')
             lists[key] = [safe_path(path)[len('/workspace/'):] for path in sent[key]]
-        return print(json.dumps(guardrails(opts.id, state, lists['restricted'], lists['watched'])))
+        # blocked?: program names. Absent (an older caller, or a change to files only): keep the host's.
+        blocked = sent.get('blocked')
+        if blocked is not None and not (isinstance(blocked, list) and len(blocked) <= 200 and all(
+                isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9._+-]{1,64}', name) and name not in ('.', '..') for name in blocked)):
+            raise ValueError('Invalid blocked list')
+        return print(json.dumps(guardrails(opts.id, state, lists['restricted'], lists['watched'], blocked)))
     if opts.action == 'guardrails':
         return print(json.dumps(guardrails(opts.id, inspect(opts.id))))
     if opts.action == 'set-token':
