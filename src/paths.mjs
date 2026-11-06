@@ -27,7 +27,7 @@ export const paths = {
 // the npm package in raytrace/app/ (python/build_wheels.py), next to its own Node.js.
 const fromPip = basename(root) === 'app' && basename(dirname(root)) === 'raytrace';
 export const install = fromPip
-  ? { add: 'pip install raytrace', remove: 'pip uninstall raytrace', run: 'uvx raytrace' }
+  ? { add: 'pip install raytrace-cli', remove: 'pip uninstall raytrace-cli', run: 'uvx --from raytrace-cli raytrace' }
   : { add: 'npm install -g @raytrace-cli/cli', remove: 'npm uninstall -g @raytrace-cli/cli', run: 'npx -y @raytrace-cli/cli' };
 
 export const DEFAULT_PORT = 8797;

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build the pip wheels for `raytrace`, one per platform.
+"""Build the pip wheels for `raytrace-cli`, one per platform.
 
 Each wheel holds exactly what `npm publish` ships (from `npm pack`, so the
 "files" list in package.json decides) plus an official Node.js build for that
 platform, checked against nodejs.org's SHASUMS256.txt. pip picks the wheel
-that matches the machine, so `pip install raytrace` needs no Node.js.
+that matches the machine, so `pip install raytrace-cli` needs no Node.js.
+(PyPI does not allow the name `raytrace`; the command is still `raytrace`.)
 
     python3 python/build_wheels.py                      # every platform, into python/dist/
     python3 python/build_wheels.py --platform darwin-arm64
@@ -116,7 +117,7 @@ def record_line(name, data):
 
 def build(platform, package, version, readme, out_dir):
     tag = f'py3-none-{PLATFORMS[platform]}'
-    dist_info = f'raytrace-{version}.dist-info'
+    dist_info = f'raytrace_cli-{version}.dist-info'
     entries = []  # (name, bytes, mode)
 
     for name in ('__init__.py', '__main__.py'):
@@ -129,7 +130,7 @@ def build(platform, package, version, readme, out_dir):
 
     metadata = '\n'.join([
         'Metadata-Version: 2.1',
-        'Name: raytrace',
+        'Name: raytrace-cli',
         f'Version: {version}',
         'Summary: See what your coding agent did: traces, tool calls, cost and step-by-step evidence for Claude Code and Codex.',
         'Home-page: https://raytracer.si',
@@ -152,7 +153,7 @@ def build(platform, package, version, readme, out_dir):
         (f'{dist_info}/LICENSE', license_text, 0o644),
     ]
 
-    path = os.path.join(out_dir, f'raytrace-{version}-{tag}.whl')
+    path = os.path.join(out_dir, f'raytrace_cli-{version}-{tag}.whl')
     record = [record_line(name, data) for name, data, _ in entries] + [f'{dist_info}/RECORD,,']
     entries.append((f'{dist_info}/RECORD', ('\n'.join(record) + '\n').encode(), 0o644))
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:

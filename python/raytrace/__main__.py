@@ -16,7 +16,7 @@ CLI = os.path.join(HERE, 'app', 'bin', 'raytrace.mjs')
 
 def main():
     if not os.path.isfile(NODE):
-        sys.exit(f'raytrace: the bundled Node.js is missing ({NODE}); reinstall with pip install --force-reinstall raytrace')
+        sys.exit(f'raytrace: the bundled Node.js is missing ({NODE}); reinstall with pip install --force-reinstall raytrace-cli')
     if os.name != 'nt' and not os.access(NODE, os.X_OK):
         # Some installers drop the executable bit that the wheel records.
         os.chmod(NODE, os.stat(NODE).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

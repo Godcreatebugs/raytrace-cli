@@ -31,9 +31,9 @@ and network connections. You explore it all in a dashboard.
 | **[Cloud sandbox](#cloud-sandboxes)** | RayTrace's servers | yes | sharing sessions with your team at [app.raytracer.si](https://app.raytracer.si) |
 
 All three need **Node.js 22.13 or newer** (`node --version`) on macOS or Linux,
-or none at all from pip: `pip install raytrace` (or `uv tool install raytrace`)
+or none at all from pip: `pip install raytrace-cli` (or `uv tool install raytrace-cli`)
 installs the same CLI with its own Node.js. Where this page says
-`npx -y @raytrace-cli/cli@latest`, use `uvx raytrace` instead.
+`npx -y @raytrace-cli/cli@latest`, use `uvx --from raytrace-cli raytrace` instead.
 Windows is experimental.
 
 ---
@@ -550,7 +550,7 @@ until then.
 raytrace sandbox destroy <id or name>   # any sandboxes you no longer need
 raytrace uninstall --purge              # local sandboxes: deletes the VM and ~/.raytrace
 raytrace auth logout
-npm uninstall -g @raytrace-cli/cli     # or: pip uninstall raytrace
+npm uninstall -g @raytrace-cli/cli     # or: pip uninstall raytrace-cli
 claude mcp remove raytrace -s user      # if you added the MCP server to Claude Code
 ```
 
