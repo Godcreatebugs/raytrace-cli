@@ -68,6 +68,15 @@ Share recorded traces (time-limited cloud link):
   raytrace share --list                     list your active share links
   raytrace share --revoke <share-id>        revoke an active share link
 
+Report a run on a pull request (commands and exit codes, files changed, cost):
+  raytrace report <trace-id>                print the comment (Markdown); secrets are hidden
+  raytrace report <trace-id> --pr <number>  post it with the GitHub CLI (gh), signed in as you;
+                                            run again to update the same comment
+      --sandbox <rtp-id>                    a cloud sandbox's run (needs sign-in)
+      --link                                add a share link (cloud runs; uses one of your
+                                            plan's share links, which expire)
+      --dry-run                             print what would be posted, post nothing
+
 AI features in the dashboard (summaries, recaps, Chain of thought), on your own key:
   raytrace key                              which keys are set
   raytrace key openrouter                   add your OpenRouter key (asked for, not echoed)
@@ -269,6 +278,27 @@ if (command === 'share') {
     console.error(`raytrace share: ${error.message}`);
     process.exit(1);
   }
+}
+
+if (command === 'report') {
+  const usage = 'Usage: raytrace report <trace-id> [--pr <number>] [--sandbox <rtp-id>] [--link] [--dry-run]';
+  let parsed;
+  try {
+    parsed = parseArgs({ args: rest, strict: true, allowPositionals: true, options: {
+      pr: { type: 'string' },
+      sandbox: { type: 'string' },
+      link: { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
+    } });
+  } catch (error) { console.error(`${error.message}\n\n${usage}`); process.exit(2); }
+  const [traceId, ...extra] = parsed.positionals;
+  if (!traceId || extra.length) { console.error(usage); process.exit(2); }
+  const { reportCommand } = await import('../src/report.mjs');
+  try {
+    await reportCommand(traceId, { pr: parsed.values.pr ?? null, sandbox: parsed.values.sandbox ?? null,
+      link: Boolean(parsed.values.link), dryRun: Boolean(parsed.values['dry-run']) });
+    process.exit(0);
+  } catch (error) { console.error(`raytrace report: ${error.message}`); process.exit(1); }
 }
 
 let flags;
