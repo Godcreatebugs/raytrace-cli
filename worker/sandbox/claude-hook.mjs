@@ -55,11 +55,41 @@ const MAX_QUEUED_BYTES = 128 * 1024;
 const listed = (value) => (Array.isArray(value) ? value.filter((file) => typeof file === 'string' && file) : []);
 let restricted = [];
 let watched = [];
+// `blocked`: programs the owner forbids; a command that starts one is refused.
+let blocked = [];
 try {
   const lists = JSON.parse(readFileSync(new URL('./guardrails.json', import.meta.url), 'utf8'));
   restricted = listed(lists.restricted);
   watched = listed(lists.watched);
+  blocked = listed(lists.blocked);
 } catch { /* nothing is restricted or watched */ }
+
+// Prefixes that start the program after them rather than being the program.
+const WRAPPERS = new Set(['sudo', 'doas', 'env', 'nohup', 'time', 'nice', 'exec', 'command', 'builtin', 'stdbuf']);
+// A wrapper's options that take the next word as their value (sudo -u root, nice -n 5).
+const VALUED = new Set(['-u', '-g', '-n', '-C', '-p']);
+
+/** The programs a command line starts, by name: the first word of each part
+ * between ; & | ( ) ` and new lines, past VAR=value and wrappers, with any
+ * path taken off (/usr/bin/curl is curl). Text only: `sh -c 'curl ...'` names
+ * sh, which is why the kernel's view (facts.py) is the check that holds. */
+function firstPrograms(command) {
+  const programs = [];
+  for (const part of String(command).split(/[;&|()`\n]+/)) {
+    let value = false;
+    for (const raw of part.trim().split(/\s+/)) {
+      const word = raw.replace(/^\\/, '').replace(/^['"]+|['"]+$/g, '');
+      if (value) { value = false; continue; }
+      if (!word || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+      const name = word.split('/').pop();
+      if (word.startsWith('-')) { value = VALUED.has(word); continue; }
+      if (WRAPPERS.has(name)) continue;
+      if (name) programs.push(name);
+      break;
+    }
+  }
+  return programs;
+}
 
 /** A file the tool named, relative to the project; null when it is outside it. */
 const inside = (named) => {
@@ -97,6 +127,16 @@ if (input.hook_event_name === 'PreToolUse') {
   // says what it mentions, not what it does. The file lock is what stops it.
   if (input.tool_name === 'Bash' && typeof command === 'string') {
     for (const path of restricted.slice(0, 200)) if (command.includes(path)) queue({ kind: 'named', path });
+    // A program the owner blocked is refused before anything else answers for the command.
+    const refused = blocked.length ? firstPrograms(command).find((program) => blocked.includes(program)) : undefined;
+    if (refused) {
+      queue({ kind: 'command_blocked', path: refused });
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+        permissionDecisionReason: `RayTrace: ${refused} is blocked by this project's owner and cannot be run. `
+          + 'Do not try another way to run it (a full path, sh -c, another tool): the sandbox records every program that runs. '
+          + 'Tell the user it has to be unblocked under Initial scan in the RayTrace dashboard.' } }));
+      process.exit(0);
+    }
   }
   if (input.tool_name === 'Bash' && /^[A-Za-z0-9_-]{1,128}$/.test(id ?? '') && typeof command === 'string') {
     // An input change needs a decision with it. Only a session that already
