@@ -62,6 +62,7 @@ Then ask your agent, for example, "put this repo in a local sandbox and open it"
 | `raytrace auth login\|status\|logout` | your RayTrace sign-in, for cloud sandboxes |
 | `raytrace upload logs [--sandbox <name>]` | send a local sandbox's recorded logs to the cloud dashboard; `raytrace upload status` shows your storage |
 | `raytrace share <trace-id> [--fork]` | a time-limited link to one recorded prompt; `--list`, `--revoke <share-id>` |
+| `raytrace report <trace-id> [--pr <number>]` | a pull-request comment for one run: commands and exit codes, files changed, cost. Prints it, or posts it with `gh`; `--sandbox <rtp-id>` for a cloud run, `--link`, `--dry-run` |
 | `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded prompt to the terminal or a file |
 | `raytrace --code <code>` | redeem a beta invite code |
 | `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features |

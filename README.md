@@ -465,6 +465,25 @@ raytrace key              # which keys are set
   was.
 - `raytrace key openrouter --remove` removes a key.
 
+## Report a run on a pull request
+
+`raytrace report <trace-id>` turns one recorded run into a short Markdown
+comment: the commands with their exit codes (failures first), the files changed
+with lines added and removed, the cost and the trace id.
+
+```sh
+raytrace report <trace-id>                 # print the comment
+raytrace report <trace-id> --pr 42         # post it on PR 42 with the GitHub CLI, signed in as you
+raytrace report <trace-id> --pr 42 --dry-run   # show what would be posted
+```
+
+- **Only command text and file paths go in**, never tool output. API keys,
+  tokens and passwords are hidden, and the comment says how many were.
+- **Running it again updates the same comment.** It only ever edits its own.
+- **Cloud runs:** add `--sandbox <rtp-id>` (needs sign-in). `--link` adds a
+  share link, which uses one of your plan's expiring links.
+- **No `gh`?** It prints the comment for you to paste.
+
 ---
 
 ## Commands
@@ -481,6 +500,7 @@ raytrace key              # which keys are set
 | `raytrace auth login\|status\|logout` | your RayTrace sign-in, for cloud sandboxes |
 | `raytrace upload logs [--sandbox <name>]` | send a local sandbox's recorded logs to the cloud dashboard; `raytrace upload status` shows your storage |
 | `raytrace share <trace-id> [--fork]` | a time-limited link to one recorded prompt; `--list`, `--revoke <share-id>` |
+| `raytrace report <trace-id> [--pr <number>]` | a pull-request comment for one run: commands and exit codes, files changed, cost. Prints it, or posts it with `gh`; `--sandbox <rtp-id>` for a cloud run, `--link`, `--dry-run` |
 | `raytrace export <trace-id> [--format json\|markdown] [--output <file>]` | export a recorded prompt to the terminal or a file, even with RayTrace stopped |
 | `raytrace --code <code>` | redeem a beta invite code |
 | `raytrace key [openrouter\|typesafe] [--remove]` | your keys for the dashboard's AI features |
@@ -582,8 +602,10 @@ RAYTRACE_HOME=/tmp/rt node bin/raytrace.mjs setup --no-claude-code
 
 ### Publishing to pip
 
-The pip package is the npm package plus an official Node.js build, one wheel per
-platform. After `npm publish`, build the same version's wheels and upload them:
+The pip package, `raytrace-cli` (PyPI does not allow `raytrace`), is the npm
+package plus an official Node.js build, one wheel per platform. Each release
+goes to both with the same version: bump it (`npm version x.y.z`), push the
+`vx.y.z` tag, `npm publish`, then build the same version's wheels and upload them:
 
 ```sh
 python3 python/build_wheels.py    # all six platforms, into python/dist/
@@ -592,7 +614,11 @@ twine upload python/dist/*.whl
 
 The *pip wheels* workflow builds the same wheels on every `v*` tag and installs
 them on Linux, macOS and Windows (x64 and ARM); its `wheels` artifact can be
-uploaded instead. The Node.js version is `NODE_VERSION` in `python/build_wheels.py`.
+uploaded instead (`gh run download <run-id> -n wheels`). The Node.js version
+is `NODE_VERSION` in `python/build_wheels.py`. Run `twine upload` in a real
+terminal, since it asks for the PyPI token (username `__token__`); `--verbose`
+shows why PyPI refuses an upload. A version can only be uploaded once, and the
+PyPI page's description (`python/README.md`) only changes with a new version.
 
 ## License
 
