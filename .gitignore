@@ -4,3 +4,5 @@ dist/
 .raytace/
 .DS_Store
 *.tsbuildinfo
+python/dist/
+python/.cache/

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, constants, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { paths } from './paths.mjs';
+import { install, paths } from './paths.mjs';
 import { portOf, proxyEnv, readConfig, writeConfig } from './config.mjs';
 import { checkRunningPid, dashboardLink, healthy, portInUse, PROXY_API, proxyApi, runningPid, start, status, stop } from './proxy-process.mjs';
 import { HOOK_COMMAND, hookState, setHook } from './claude-code.mjs';
@@ -60,7 +60,7 @@ export async function setup(flags) {
 
   if (hookClaude && !onPath('raytrace')) {
     say(`\n  Warning: \`raytrace\` is not on your PATH, and Claude Code's hook runs \`${HOOK_COMMAND}\`.`);
-    say('  Install it globally so the hook can find it:  npm install -g @raytrace-cli/cli');
+    say(`  Install it globally so the hook can find it:  ${install.add}`);
   }
 
   // A proxy this CLI started is restarted so the new settings apply.
@@ -177,7 +177,7 @@ export async function doctor() {
     }
   }
   line(existsSync(paths.dashboard) ? true : false, 'dashboard', existsSync(paths.dashboard) ? 'built' : `missing from ${paths.dashboard}; reinstall`);
-  line(onPath('raytrace') ? true : false, 'raytrace on PATH', onPath('raytrace') ? 'yes' : 'no: Claude Code\'s hook cannot run it (npm install -g @raytrace-cli/cli)');
+  line(onPath('raytrace') ? true : false, 'raytrace on PATH', onPath('raytrace') ? 'yes' : `no: Claude Code's hook cannot run it (${install.add})`);
 
   try {
     const hooks = hookState();
@@ -281,5 +281,5 @@ export async function uninstall(flags) {
     }
     else say(`Kept ${paths.home}.`);
   }
-  say('To remove the command itself: npm uninstall -g @raytrace-cli/cli');
+  say(`To remove the command itself: ${install.remove}`);
 }

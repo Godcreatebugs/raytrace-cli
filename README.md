@@ -30,7 +30,10 @@ and network connections. You explore it all in a dashboard.
 | **[Local sandbox](#local-sandboxes)** | a Linux VM on your machine | none | keeping your code on your machine; free and open source |
 | **[Cloud sandbox](#cloud-sandboxes)** | RayTrace's servers | yes | sharing sessions with your team at [app.raytracer.si](https://app.raytracer.si) |
 
-All three need **Node.js 22.13 or newer** (`node --version`) on macOS or Linux.
+All three need **Node.js 22.13 or newer** (`node --version`) on macOS or Linux,
+or none at all from pip: `pip install raytrace` (or `uv tool install raytrace`)
+installs the same CLI with its own Node.js. Where this page says
+`npx -y @raytrace-cli/cli@latest`, use `uvx raytrace` instead.
 Windows is experimental.
 
 ---
@@ -547,7 +550,7 @@ until then.
 raytrace sandbox destroy <id or name>   # any sandboxes you no longer need
 raytrace uninstall --purge              # local sandboxes: deletes the VM and ~/.raytrace
 raytrace auth logout
-npm uninstall -g @raytrace-cli/cli
+npm uninstall -g @raytrace-cli/cli     # or: pip uninstall raytrace
 claude mcp remove raytrace -s user      # if you added the MCP server to Claude Code
 ```
 
@@ -576,6 +579,20 @@ To try it without touching your real setup, give it its own home and port:
 mkdir -p /tmp/rt && echo RAYTACE_PORT=18797 > /tmp/rt/config.env
 RAYTRACE_HOME=/tmp/rt node bin/raytrace.mjs setup --no-claude-code
 ```
+
+### Publishing to pip
+
+The pip package is the npm package plus an official Node.js build, one wheel per
+platform. After `npm publish`, build the same version's wheels and upload them:
+
+```sh
+python3 python/build_wheels.py    # all six platforms, into python/dist/
+twine upload python/dist/*.whl
+```
+
+The *pip wheels* workflow builds the same wheels on every `v*` tag and installs
+them on Linux, macOS and Windows (x64 and ARM); its `wheels` artifact can be
+uploaded instead. The Node.js version is `NODE_VERSION` in `python/build_wheels.py`.
 
 ## License
 
