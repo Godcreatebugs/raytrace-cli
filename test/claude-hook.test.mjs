@@ -40,7 +40,7 @@ test('PreToolUse defaults to ask when permission_mode is not bypassPermissions',
   assert.equal(res.hookSpecificOutput?.updatedInput?.command, 'export RAYTRACE_CALL_ID=call_test_1\necho hello');
 });
 
-test('PreToolUse allows commands when RAYTRACE_ALLOW_ALL=1 in headless/CI mode', async () => {
+test('PreToolUse allows commands when RAYTRACE_ALLOW_ALL=1', async () => {
   const input = {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
@@ -65,7 +65,7 @@ test('PreToolUse allows commands when permission_mode is bypassPermissions', asy
   assert.equal(res.hookSpecificOutput?.permissionDecision, 'allow');
 });
 
-test('PreToolUse allows commands automatically in CI or GitHub Actions environment', async () => {
+test('PreToolUse still asks in CI, GitHub Actions or generic headless environments', async () => {
   const input = {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
@@ -73,12 +73,21 @@ test('PreToolUse allows commands automatically in CI or GitHub Actions environme
     tool_input: { command: 'cargo test' },
     permission_mode: 'ask'
   };
-  const ciRes = await runHook({ CI: 'true' }, input);
-  assert.equal(ciRes.hookSpecificOutput?.permissionDecision, 'allow');
+  // Ambient variables a CI runner or a wrapper script sets on its own must never turn the prompts off.
+  for (const env of [{ CI: 'true' }, { CI: '1' }, { GITHUB_ACTIONS: 'true' }, { HEADLESS: '1' }, { RAYTRACE_HEADLESS: '1' }]) {
+    const res = await runHook({ RAYTRACE_ALLOW_ALL: '', ...env }, input);
+    assert.equal(res.hookSpecificOutput?.permissionDecision, 'ask', JSON.stringify(env));
+  }
+});
 
-  const ghaRes = await runHook({ GITHUB_ACTIONS: 'true' }, input);
-  assert.equal(ghaRes.hookSpecificOutput?.permissionDecision, 'allow');
-
-  const headlessRes = await runHook({ RAYTRACE_HEADLESS: '1' }, input);
-  assert.equal(headlessRes.hookSpecificOutput?.permissionDecision, 'allow');
+test('PreToolUse accepts RAYTRACE_ALLOW_ALL=true as well as 1', async () => {
+  const input = {
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_use_id: 'call_test_allow_true',
+    tool_input: { command: 'cargo test' },
+    permission_mode: 'ask'
+  };
+  const res = await runHook({ RAYTRACE_ALLOW_ALL: 'true' }, input);
+  assert.equal(res.hookSpecificOutput?.permissionDecision, 'allow');
 });
