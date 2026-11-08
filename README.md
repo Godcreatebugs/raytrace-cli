@@ -483,6 +483,8 @@ raytrace report <trace-id> --pr 42 --dry-run   # show what would be posted
 - **Cloud runs:** add `--sandbox <rtp-id>` (needs sign-in). `--link` adds a
   share link, which uses one of your plan's expiring links.
 - **No `gh`?** It prints the comment for you to paste.
+- npm test
+  npm run typecheck
 
 ---
 
