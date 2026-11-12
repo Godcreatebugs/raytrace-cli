@@ -107,7 +107,7 @@ export async function checks({ vmRunning = false, runInVm = null } = {}) {
   const row = (ok, label, detail, fix) => rows.push({ ok, label, detail, fix });
   const platform = process.platform;
 
-  if (platform === 'win32') row(null, 'platform', 'Windows: local sandboxes are experimental here (Lima on Windows is)');
+  if (platform === 'win32') row(null, 'platform', 'Windows: local sandboxes are experimental here (Lima on Windows is); the workable paths are WSL2 and cloud sandboxes: https://github.com/Godcreatebugs/raytrace-cli/blob/main/docs/windows.md');
   else if (platform !== 'darwin' && platform !== 'linux') row(false, 'platform', `${platform} is not supported for local sandboxes`);
 
   const lima = findLima();
@@ -115,7 +115,10 @@ export async function checks({ vmRunning = false, runInVm = null } = {}) {
   else if (canDownload()) {
     row(null, 'lima', `${lima?.old ? `${lima.old} is older than ${MINIMUM.join('.')}` : 'not installed'}; RayTrace downloads Lima ${LIMA_VERSION} on the first \`raytrace sandbox create --local\``);
   } else {
-    row(false, 'lima', lima?.old ? `${lima.old} is older than ${MINIMUM.join('.')}` : 'not installed', 'install Lima: https://lima-vm.io/docs/installation/');
+    row(false, 'lima', lima?.old ? `${lima.old} is older than ${MINIMUM.join('.')}` : 'not installed',
+      platform === 'win32'
+        ? 'Lima has no native Windows build and RayTrace does not download it there; use WSL2 or a cloud sandbox: https://github.com/Godcreatebugs/raytrace-cli/blob/main/docs/windows.md'
+        : 'install Lima: https://lima-vm.io/docs/installation/');
   }
 
   if (platform === 'darwin') {
