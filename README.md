@@ -2,10 +2,7 @@
 
 <p align="center">
   <a href="https://www.raytracer.si/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-wordmark-dark.svg">
-      <img src="docs/images/logo-wordmark-light.svg" alt="RayTrace" width="280">
-    </picture>
+    <img src="docs/images/logo-wordmark-white.svg" alt="RayTrace — Prompts, Tool calls, Sandbox evidence" width="560">
   </a>
 </p>
 
@@ -88,15 +85,15 @@ npm install -g @raytrace-cli/cli
 cd your-project                              # any Git repository
 raytrace sandbox create --local              # first time: sets up the VM, a few minutes
 raytrace connect your-project --claude       # a terminal in it, with Claude Code running
-raytrace open                                # local dashboard at http://127.0.0.1:8797
+# open the local dashboard at http://127.0.0.1:8797
 ```
 
 - The sandbox is named after the folder. Use `--name my-box` to choose the name.
 - Use `--codex` instead of `--claude` to start Codex, or leave both off for a
   plain shell where you run `claude` or `codex` yourself.
 - `connect` prints a link to the dashboard showing only this sandbox's prompts.
-  `raytrace open` opens the full dashboard at `http://127.0.0.1:8797` and signs
-  your browser in. If you set `RAYTACE_PORT` in `~/.raytrace/config.env`, the
+  The full local dashboard is at `http://127.0.0.1:8797` — open that in your
+  browser. If you set `RAYTACE_PORT` in `~/.raytrace/config.env`, the
   dashboard is on that port instead.
 
 The npm package needs **Node.js 22.13 or newer** (`node --version`) on macOS or
@@ -185,8 +182,8 @@ page yet. Its commands, file changes and network connections are recorded.
 ## What a recorded session shows
 
 Cloud sessions are at [app.raytracer.si](https://app.raytracer.si). The local
-dashboard is at `http://127.0.0.1:8797`; `raytrace open` opens it and signs
-your browser in. Every page is about one prompt, and they link to each other.
+dashboard is at `http://127.0.0.1:8797` — open that in your browser. Every
+page is about one prompt, and they link to each other.
 
 The dashboard has two layers. **Tool calls** are what the agent reported: the
 path from your prompt to the answer, with the command, what the agent says came
@@ -339,7 +336,7 @@ Other known limits:
 - **Local sandboxes** keep everything on your machine, in `~/.raytrace`, readable
   only by you. The local dashboard's API needs the token in
   `~/.raytrace/api-token`, so other accounts on the machine can't read your
-  traces. `raytrace open` signs your browser in with a one-time link.
+  traces. Opening the dashboard signs your browser in with a one-time link.
 - **Cloud sandboxes** upload your project ([what is uploaded](docs/cloud.md#what-is-uploaded))
   and record prompts, model requests and answers, tool calls and commands on
   RayTrace's servers. Members of your organization can see them; other
