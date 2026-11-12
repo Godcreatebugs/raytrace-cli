@@ -1,13 +1,17 @@
-# RayTrace
-
 <p align="center">
   <a href="https://www.raytracer.si/">
     <img src="docs/images/logo-wordmark-white.svg" alt="RayTrace — Prompts, Tool calls, Sandbox evidence" width="560">
   </a>
 </p>
 
+<h1 align="center">Eye of Sauron</h1>
+
 <p align="center">
-  <strong>See what your coding agent actually did.</strong>
+  See what your coding agents did, rather than what they said they did.
+</p>
+
+<p align="center">
+  <img src="docs/images/watching-eye.gif" alt="The agent said it only read the file. The sandbox saw it wrote to ~/.bashrc, twice." width="560">
 </p>
 
 <p align="center">
