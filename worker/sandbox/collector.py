@@ -291,8 +291,41 @@ class Writer(threading.Thread):
         if wrote_heartbeat:
             self.last_heartbeat = now
 
+    def close_orphaned_streams(self, db):
+        """Ends the streams an earlier collector left open, at their last heartbeat.
+
+        A connection records its own collector_disconnected when gVisor closes
+        it, but that runs on a daemon thread: when the collector itself stops
+        (a restart, an update, a crash) nothing is written, and the stream looks
+        open forever. gVisor does not reconnect a running sandbox to the new
+        collector, so recording has stopped until that sandbox restarts. Record
+        the cut-out in the earlier collector's name, at the last moment it was
+        known to be alive. Only safe once this collector holds the socket, so no
+        other collector can still be writing. Returns the streams it closed."""
+        with db:
+            orphans = db.execute('SELECT id, collector_id, container_id, heartbeat_ms FROM capture_streams '
+                                 'WHERE ended_ms IS NULL AND collector_id <> ?', (self.instance_id,)).fetchall()
+            for connection, collector, container, heartbeat in orphans:
+                db.execute('UPDATE capture_streams SET ended_ms=? WHERE id=?', (heartbeat, connection))
+                if not container:
+                    continue   # no event ever named its sandbox: nothing to tell a consumer
+                gone = {'kind': 'collector_disconnected', 'container_id': container, 'coverage': 'not_certified',
+                        'reason': 'collector stopped', 'source_instance_id': collector,
+                        'source_connection_id': connection, 'received_ms': heartbeat}
+                db.execute('INSERT INTO runtime_events(connection,received_ms,container_id,kind,body) VALUES(?,?,?,?,?)',
+                           (connection, heartbeat, container, 'collector_disconnected', json.dumps(gone)))
+        return [row[0] for row in orphans]
+
     def run(self):
         db = init_db(self.database)
+        while True:
+            try:
+                for connection in self.close_orphaned_streams(db):
+                    print(f'RayTrace collector: stream {connection} was left open by a stopped collector; ended it at its last heartbeat', flush=True)
+                break
+            except sqlite3.Error as error:
+                print(f'RayTrace collector: earlier streams not closed ({error}); retrying', flush=True)
+                time.sleep(1)
         while True:
             try:
                 batch = [self.rows.get(timeout=5)]
