@@ -1,7 +1,8 @@
 # What you can do with a recorded session
 
-Cloud sessions are at [app.raytracer.si](https://app.raytracer.si), and
-`raytrace open` opens the same pages for your local sandboxes. Every page is
+Cloud sessions are at [app.raytracer.si](https://app.raytracer.si). The local
+dashboard is at `http://127.0.0.1:8797`; `raytrace open` opens those same pages
+for your local sandboxes and signs your browser in. Every page is
 about one prompt, and they link to each other, so you can go from "what did I
 ask" to "what actually ran" to "what if it had gone differently" in a couple of
 clicks. The screenshots below are from the cloud dashboard, with a session in
