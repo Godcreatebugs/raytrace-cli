@@ -11,7 +11,7 @@
 | `raytrace sandbox list [--local]` | your sandboxes |
 | `raytrace sandbox start\|stop <id or name>` | start or stop one; stopping keeps its files |
 | `raytrace sandbox destroy <id or name>` | delete one. Cloud: `--keep-traces` (paid plans). Local: `--delete-logs` or `--keep-logs` |
-| `raytrace open` | open the local dashboard |
+| `raytrace open` | open the local dashboard at `http://127.0.0.1:8797` and sign the browser in |
 | `raytrace auth login\|status\|logout` | your RayTrace sign-in, for cloud sandboxes |
 | `raytrace upload logs [--sandbox <name>]` | send a local sandbox's recorded logs to the cloud dashboard; `raytrace upload status` shows your storage |
 | `raytrace share <trace-id> [--fork]` | a time-limited link to one recorded prompt; `--list`, `--revoke <share-id>` |
