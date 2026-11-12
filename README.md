@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="https://app.raytracer.si/demo"><strong>Try the demo</strong></a> ·
   <a href="https://www.raytracer.si/">Website</a> ·
   <a href="https://www.npmjs.com/package/@raytrace-cli/cli">npm</a> ·
   <a href="https://pypi.org/project/raytrace-cli/">PyPI</a> ·
