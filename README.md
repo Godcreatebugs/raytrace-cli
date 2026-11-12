@@ -120,7 +120,7 @@ then say "create a local sandbox and connect this repo".
 | **macOS 13.5 or later** | Nothing to install. RayTrace uses your [Lima](https://lima-vm.io) 2.0+ if you have it, or offers to download Lima into `~/.raytrace/lima` (no admin rights; checked against a pinned checksum) |
 | **Older macOS** | QEMU too: `brew install qemu` |
 | **Linux** | Lima, QEMU, and access to `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log out and in) |
-| **Windows** | experimental; RayTrace doesn't download Lima there |
+| **Windows** | experimental; RayTrace doesn't download Lima there, so local sandboxes need WSL2 — see [docs/windows.md](docs/windows.md) for what works and the WSL2 and cloud paths |
 | **Disk and memory** | the first setup downloads about 1 GB; the VM uses 4 GiB of memory while it runs |
 
 `raytrace doctor` checks all of this and says how to fix anything missing.
