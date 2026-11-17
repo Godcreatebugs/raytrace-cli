@@ -1,143 +1,39 @@
 name: Publish npm package
 
+# Diagnostic branch only, never merged: asks npm for a publish token the way
+# `npm publish` does and prints npm's answer. Publishes nothing.
 on:
-  # Use the trusted base-branch workflow for merged PRs, including forks.
-  # Only main is checked out; unmerged PR code is never executed.
-  pull_request_target:
-    branches: [main]
-    types: [closed]
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing stable release tag to publish (for example v0.13.1)'
-        required: true
+        description: 'unused'
+        required: false
         type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: npm-publish
-  queue: max
-
 jobs:
-  prepare-release:
-    if: github.repository == 'Godcreatebugs/raytrace-cli' && github.event_name == 'pull_request_target' && github.event.pull_request.merged
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: write
-    outputs:
-      tag: ${{ steps.release.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-
-      - name: Configure release commit author
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-      # The release is a tag only: the version commit sits on top of main and is
-      # never pushed to it, because main takes changes through pull requests
-      # alone. The next version counts from the highest vX.Y.Z tag.
-      - name: Make the version commit and push its release tag
-        id: release
-        run: node .github/scripts/prepare-npm-release.mjs
-
-      - name: Create GitHub Release and build pip wheels
-        if: steps.release.outputs.tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --title "RayTrace CLI $RELEASE_TAG" --generate-notes
-          fi
-          # GITHUB_TOKEN pushes do not trigger tag workflows. Dispatch this
-          # explicitly; the wheels are built for download, not uploaded to PyPI.
-          gh workflow run pip.yml --ref "$RELEASE_TAG"
-
   publish:
-    needs: prepare-release
-    if: always() && !cancelled() && github.repository == 'Godcreatebugs/raytrace-cli' && ((needs.prepare-release.result == 'success' && needs.prepare-release.outputs.tag != '') || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && !github.event.release.prerelease))
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     environment:
       name: npm
-      url: https://www.npmjs.com/package/@raytrace-cli/cli
     permissions:
       contents: read
       id-token: write
-      deployments: write
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag || github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-          persist-credentials: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
-
-      - name: Ensure npm supports trusted publishing
-        run: npm install --global npm@11
-
-      - name: Validate release and check npm registry
-        id: package
-        shell: bash
+      - name: Ask npm for a publish token
         run: |
           node --input-type=module <<'JS'
-          import { readFileSync, appendFileSync } from 'node:fs';
-          const { name, version, repository } = JSON.parse(readFileSync('package.json', 'utf8'));
-          if (name !== '@raytrace-cli/cli' || !/^\d+\.\d+\.\d+$/.test(version)) {
-            throw new Error('Expected the RayTrace CLI package with a stable version.');
-          }
-          if (process.env.RELEASE_TAG !== `v${version}`) {
-            throw new Error(`Tag ${process.env.RELEASE_TAG} does not match package version ${version}.`);
-          }
-          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/${version}`);
-          if (response.status !== 200 && response.status !== 404) {
-            throw new Error(`Registry check failed: HTTP ${response.status}`);
-          }
-          const exists = response.status === 200;
-          if (!exists && repository?.url !== 'git+https://github.com/Godcreatebugs/raytrace-cli.git') {
-            throw new Error('The release must include repository.url for npm provenance.');
-          }
-          appendFileSync(process.env.GITHUB_OUTPUT, `exists=${exists}\n`);
-          if (exists) {
-            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${name}@${version} is already on npm; skipped publishing.\n`);
-          }
+          const env = process.env;
+          const got = await fetch(`${env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org`, { headers: { authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
+          const id = (await got.json()).value;
+          const claims = JSON.parse(Buffer.from(id.split('.')[1], 'base64url').toString());
+          for (const key of ['iss', 'aud', 'sub', 'repository', 'repository_owner', 'repository_visibility', 'workflow_ref', 'job_workflow_ref', 'environment', 'ref', 'event_name', 'runner_environment']) console.log(key, '=', claims[key]);
+          const answer = await fetch('https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/@raytrace-cli%2fcli', { method: 'POST', headers: { authorization: `Bearer ${id}` } });
+          const body = await answer.text();
+          let shown = body;
+          try { const parsed = JSON.parse(body); if (parsed.token) parsed.token = '(received)'; shown = JSON.stringify(parsed); } catch {}
+          console.log('npm answered', answer.status, shown);
           JS
-
-      - name: Install dependencies
-        if: steps.package.outputs.exists == 'false'
-        run: npm ci
-
-      - name: Typecheck
-        if: steps.package.outputs.exists == 'false'
-        run: npm run typecheck
-
-      - name: Test
-        if: steps.package.outputs.exists == 'false'
-        run: npm test
-
-      # prepack builds the dashboard before publishing. Authentication uses OIDC;
-      # no NPM_TOKEN or NODE_AUTH_TOKEN secret is needed.
-      - name: Publish to npm
-        if: steps.package.outputs.exists == 'false'
-        run: npm publish --access public
