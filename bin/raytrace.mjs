@@ -193,6 +193,9 @@ if (command === 'sandbox') {
       clear: { type: 'string', multiple: true },
     } });
   } catch (error) { console.error(`${error.message}\n\nRun \`raytrace help\` for usage.`); process.exit(2); }
+  if (parsed.values['delete-logs'] && parsed.values['keep-logs']) {
+    console.error('Pick one: --delete-logs or --keep-logs.'); process.exit(2);
+  }
   const [sub, id] = parsed.positionals;
   const action = {
     create: () => sandbox.create(parsed.values),
