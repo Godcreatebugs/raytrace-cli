@@ -2,13 +2,17 @@
 // RayTrace. Sign-in (`raytrace auth login`) is a prerequisite — this command
 // never starts a sign-in flow and never sends the code anywhere until a
 // signed-in account is known. The backend is the source of truth: on a
-// successful redeem it deletes the code irreversibly and binds a $10
-// OpenRouter credit (hard 3-day limit) to the signed-in account. Nothing
+// successful redeem it deletes the code irreversibly and grants the signed-in
+// account one free cloud sandbox for 3 days. The agents in it run on the user's
+// own Claude Code or Codex sign-in, made inside the sandbox. Nothing
 // about the code or entitlement is stored on this machine.
 import { accessToken, consumeIdleNotice } from './auth.mjs';
 import { call, hasApiKeyOverride } from './api.mjs';
 
 const say = (line = '') => console.log(line);
+
+/** When a free beta sandbox ends: beta_ends_at, or credit_expires_at from a backend before it. */
+export const betaEnds = (status) => status?.beta_ends_at ?? status?.credit_expires_at ?? null;
 
 export const normalizeBetaCode = (code) => String(code ?? '').trim().toUpperCase().replace(/\s+/g, '');
 
@@ -49,7 +53,7 @@ function redeemError(error) {
     case 401: return new Error('Not signed in. Run: raytrace auth login, then re-run: raytrace --code <your-code>');
     case 422: return new Error("That code isn't valid. Check it and try again, or ask RayTrace for a new one.");
     case 410: return new Error('That code has expired (codes must be redeemed within 3 days). Ask RayTrace for a new one.');
-    case 409: return new Error('This account already has beta credit, so this code was not used. '
+    case 409: return new Error('This account already has a free beta sandbox, so this code was not used. '
       + 'It can still be given to someone else until it expires.');
     case 429: return new Error('Too many code attempts. Wait a while and try again.');
     default: return null;
@@ -78,19 +82,17 @@ export async function redeemBetaCode(rawCode, { ensure = ensureSignedIn, apiCall
     try {
       const status = await betaStatus(apiCall);
       if (status?.entitled) {
-        log("You're already good for beta testing: this account has its beta credit.");
-        if (status.credit_expires_at) log(`Use it by ${formatCreditDeadline(status.credit_expires_at)}: raytrace sandbox create`);
+        log("You're already good for beta testing: this account has its free beta sandbox.");
+        if (betaEnds(status)) log(`Create it by ${formatCreditDeadline(betaEnds(status))}: raytrace sandbox create`);
         return status;
       }
     } catch { /* fall through to the original error */ }
     throw error;
   }
-  const credit = data?.credit_usd ?? 10;
-  log(`You're good for beta testing: $${credit} of Claude Code credit (via OpenRouter) is on this account.`);
+  log("You're good for beta testing: one free cloud sandbox for 3 days is on this account.");
+  log('In it, sign in to Claude Code or Codex with your own account; RayTrace records the session.');
   log('Your account now shows as Beta in the RayTrace dashboard.');
-  if (data?.credit_expires_at) {
-    log(`Hard limit: create your sandbox and use the credit by ${formatCreditDeadline(data.credit_expires_at)}. Unused credit expires.`);
-  }
+  if (betaEnds(data)) log(`It ends ${formatCreditDeadline(betaEnds(data))}.`);
   log('Next, from a Git repository:  raytrace sandbox create');
   return data;
 }

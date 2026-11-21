@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ApiError } from '../src/api.mjs';
-import { ensureSignedIn, formatCreditDeadline, normalizeBetaCode, redeemBetaCode } from '../src/beta.mjs';
+import { betaEnds, ensureSignedIn, formatCreditDeadline, normalizeBetaCode, redeemBetaCode } from '../src/beta.mjs';
 
 const BIN = fileURLToPath(new URL('../bin/raytrace.mjs', import.meta.url));
 const future = () => new Date(Date.now() + 71 * 3_600_000).toISOString();
@@ -37,7 +37,7 @@ test('not signed in: redeem refuses before any API call is made', async () => {
   assert.equal(calls, 0, 'the code must not be sent, validated, or consumed while signed out');
 });
 
-test('successful redeem announces beta, credit, deadline, and next step', async () => {
+test('successful redeem announces the free sandbox, own sign-in, deadline, and next step', async () => {
   const lines = [];
   const sent = [];
   const result = await redeemBetaCode('rtb-aaaa-bbbb-cccc', {
@@ -51,7 +51,9 @@ test('successful redeem announces beta, credit, deadline, and next step', async 
   assert.deepEqual(sent, [['POST', '/v1/beta/redeem', 'RTB-AAAA-BBBB-CCCC']]);
   assert.equal(result.credit_usd, 10);
   assert.match(lines.join('\n'), /good for beta testing/);
-  assert.match(lines.join('\n'), /\$10/);
+  assert.match(lines.join('\n'), /one free cloud sandbox for 3 days/);
+  assert.match(lines.join('\n'), /sign in to Claude Code or Codex with your own account/);
+  assert.doesNotMatch(lines.join('\n'), /\$10|OpenRouter|credit/);
   assert.match(lines.join('\n'), /Beta in the RayTrace dashboard/);
   assert.match(lines.join('\n'), /raytrace sandbox create/);
 });
@@ -64,7 +66,7 @@ test('invalid, expired, and stacked codes map to distinct messages', async () =>
   });
   await assert.rejects(attempt(422), /isn't valid/);
   await assert.rejects(attempt(410), /expired \(codes must be redeemed within 3 days\)/);
-  await assert.rejects(attempt(409), /already has beta credit, so this code was not used/);
+  await assert.rejects(attempt(409), /already has a free beta sandbox, so this code was not used/);
   await assert.rejects(attempt(429), /Too many code attempts/);
   await assert.rejects(attempt(401), /Not signed in/);
 });
@@ -180,14 +182,15 @@ test('CLI: sandbox create consumes credit once, then creates plain', async () =>
     const credited = await cli(['sandbox', 'create'], env, repo);
     assert.equal(credited.code, 0, credited.err);
     assert.equal(state.lastCreditHeader, '1');
-    assert.match(credited.out, /Using your \$10 beta credit/);
-    assert.match(credited.out, /Beta credit applied/);
+    assert.match(credited.out, /This is your free beta sandbox/);
+    assert.match(credited.out, /Your free beta sandbox, until/);
+    assert.match(credited.out, /sign in inside the sandbox: use your own account/);
 
     state.betaStatus = { entitled: true, credit_usd: 10, credit_expires_at: state.expires, sandbox_consumed: true, credited_sandbox_id: 'rtp-x' };
     const plain = await cli(['sandbox', 'create'], env, repo);
     assert.equal(plain.code, 0, plain.err);
     assert.equal(state.lastCreditHeader, null);
-    assert.doesNotMatch(plain.out, /Beta credit applied/);
+    assert.doesNotMatch(plain.out, /Your free beta sandbox/);
   });
 });
 
@@ -203,7 +206,14 @@ test('CLI: expired beta credit blocks a non-interactive create', async () => {
     };
     const result = await cli(['sandbox', 'create'], env, repo);
     assert.equal(result.code, 1);
-    assert.match(result.err + result.out, /beta credit has expired|Beta credit expired/i);
+    assert.match(result.err + result.out, /free beta sandbox (has )?expired/i);
     assert.equal(state.requests.filter((r) => r.url === '/v1/sandboxes' && r.method === 'POST').length, 0);
   });
+});
+
+test('the end of a free beta sandbox is beta_ends_at, or credit_expires_at from an older backend', () => {
+  assert.equal(betaEnds({ beta_ends_at: 'a', credit_expires_at: 'b' }), 'a');
+  assert.equal(betaEnds({ credit_expires_at: 'b' }), 'b');
+  assert.equal(betaEnds({}), null);
+  assert.equal(betaEnds(null), null);
 });

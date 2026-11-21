@@ -191,10 +191,10 @@ export async function status() {
   say(left > 0 ? `Access token valid for ${left} more min; renewed automatically.` : 'Access token expired; it is renewed on the next command.');
   // Beta is a cloud entitlement, separate from any local licence tier.
   try {
-    const { betaStatus, formatCreditDeadline } = await import('./beta.mjs');
+    const { betaEnds, betaStatus, formatCreditDeadline } = await import('./beta.mjs');
     const beta = await betaStatus();
-    if (beta?.sandbox_consumed) say(`Beta: $10 credit used${beta.credited_sandbox_id ? ` on ${beta.credited_sandbox_id}` : ''}.`);
-    else if (beta?.entitled) say(`Beta: $${beta.credit_usd ?? 10} credit available${beta.credit_expires_at ? ` until ${formatCreditDeadline(beta.credit_expires_at)}` : ''} (raytrace sandbox create).`);
+    if (beta?.sandbox_consumed) say(`Beta: free sandbox created${beta.credited_sandbox_id ? ` (${beta.credited_sandbox_id})` : ''}${betaEnds(beta) ? `, until ${formatCreditDeadline(betaEnds(beta))}` : ''}.`);
+    else if (beta?.entitled) say(`Beta: one free sandbox available${betaEnds(beta) ? ` until ${formatCreditDeadline(betaEnds(beta))}` : ''} (raytrace sandbox create).`);
   } catch { /* no beta entitlement, old backend, or offline: nothing to add */ }
 }
 

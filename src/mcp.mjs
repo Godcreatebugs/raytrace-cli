@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { accessToken, account, openUrl, startDeviceLogin } from './auth.mjs';
 import { call, hasApiKeyOverride } from './api.mjs';
-import { formatCreditDeadline } from './beta.mjs';
+import { betaEnds, formatCreditDeadline } from './beta.mjs';
 import { findLima, LIMA_VERSION } from './lima.mjs';
 import { isLocal, localSandboxes, promptsLink, registry, sandboxName } from './local-sandbox.mjs';
 import { install, paths } from './paths.mjs';
@@ -59,7 +59,7 @@ const TOOLS = [
   {
     name: 'list_sandboxes',
     title: 'List sandboxes',
-    description: "This machine's local sandboxes, and the signed-in workspace's cloud sandboxes: id, name, status, age and beta credit.",
+    description: "This machine's local sandboxes, and the signed-in workspace's cloud sandboxes: id, name, status, age, and when a free beta sandbox ends.",
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
@@ -83,7 +83,7 @@ const TOOLS = [
         install_lima: { type: 'boolean', description: `With local: download Lima ${LIMA_VERSION} (open source, about 25-40 MB, no admin rights) when it is not installed. Only after the user agrees.` },
         connect: { type: 'boolean', description: 'Open a terminal connected to the new sandbox with a coding agent running in it, once it is ready. Defaults to true.' },
         agent: agentSchema,
-        without_beta_credit: { type: 'boolean', description: "Create a plain sandbox, not using the user's beta credit. Only after the user agrees, when create_sandbox reported the credit expired or used." },
+        without_beta_credit: { type: 'boolean', description: "Create a regular sandbox, not the user's free beta sandbox. Only after the user agrees, when create_sandbox reported their free beta sandbox expired or already created." },
       },
       additionalProperties: false,
     },
@@ -240,9 +240,7 @@ function describe(box) {
   const created = typeof box.created === 'number' ? box.created * 1000 : Date.parse(box.created);
   const minutes = Number.isFinite(created) ? Math.round((Date.now() - created) / 60000) : null;
   const age = minutes === null ? '' : `, ${minutes < 120 ? `${minutes} min` : `${Math.round(minutes / 60)} h`} old`;
-  const beta = box.beta && typeof box.credit_usd === 'number'
-    ? `, beta credit $${Math.max(0, box.credit_usd - (box.credit_spent_usd ?? 0)).toFixed(2)} of $${box.credit_usd} left${box.credit_expires_at ? ` (ends ${formatCreditDeadline(box.credit_expires_at)})` : ''}`
-    : '';
+  const beta = box.beta ? `, free beta sandbox${betaEnds(box) ? ` until ${formatCreditDeadline(betaEnds(box))}` : ''}` : '';
   return `${box.id}  ${box.status}  ${box.name}${age}${beta}`;
 }
 
@@ -332,10 +330,10 @@ async function createSandbox({ path, name, local = false, install_lima: installL
   const root = await projectRoot(path);
   if (local) return createLocal(root, name, installLima, connect && agent, step);
   await requireSignIn();
-  const { plan, beta } = plain ? { plan: 'none' } : await creditPlan();
+  const { plan } = plain ? { plan: 'none' } : await creditPlan();
   if (plan === 'expired') {
-    throw new ToolError('No sandbox was created: the user\'s $10 beta credit expired (its 3 days ran out; unused credit does not carry over). '
-      + 'Ask the user whether to create a plain sandbox without beta credit; if they agree, call create_sandbox again with without_beta_credit: true.');
+    throw new ToolError('No sandbox was created: the user\'s free beta sandbox expired (its 3 days ran out). '
+      + 'Ask the user whether to create a regular sandbox instead; if they agree, call create_sandbox again with without_beta_credit: true.');
   }
   const useCredit = plan === 'use';
   const { files, skipped, total } = listProject(root);
@@ -349,13 +347,14 @@ async function createSandbox({ path, name, local = false, install_lima: installL
     box = await upload(archive, name || basename(root), useCredit);
   } catch (error) {
     if (!useCredit || !isCreditRefusal(error)) throw error;
-    throw new ToolError(`No sandbox was created: the user's beta credit ${error.status === 410 ? 'expired before the sandbox was created' : 'was already used on another sandbox'}. `
-      + 'Ask the user whether to create a plain sandbox without beta credit; if they agree, call create_sandbox again with without_beta_credit: true.');
+    throw new ToolError(`No sandbox was created: the user's free beta sandbox ${error.status === 410 ? 'expired before it was created' : 'was already created'}. `
+      + 'Ask the user whether to create a regular sandbox instead; if they agree, call create_sandbox again with without_beta_credit: true.');
   }
   const lines = [
     `Sandbox ${box.id} is running.`,
     listed,
-    box.credit_applied ? `Beta credit applied: $${box.credit_usd ?? beta?.credit_usd ?? 10} (OpenRouter)${box.credit_expires_at ? `, ends ${formatCreditDeadline(box.credit_expires_at)}` : ''}.` : '',
+    box.credit_applied ? `This is the user's free beta sandbox${betaEnds(box) ? `, until ${formatCreditDeadline(betaEnds(box))}` : ''}.` : '',
+    'The first time, Claude Code (or Codex) asks the user to sign in inside the sandbox with their own account.',
     box.transcripts ? 'Claude Code sessions in it are recorded.' : `Claude Code transcripts are off: ${box.transcripts_off}. Commands are still recorded.`,
     connect ? openSandbox(box.id, { agent }).message : `To work in it: connect_sandbox, or in a terminal: raytrace connect ${box.id} --${agent}. To run commands in it from here: run_command.`,
     `Recorded sessions: ${DASHBOARD}`,

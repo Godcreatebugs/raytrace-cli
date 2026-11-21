@@ -15,7 +15,7 @@ import { request as httpsRequest } from 'node:https';
 import { basename, join } from 'node:path';
 import { account } from './auth.mjs';
 import { api, call, ApiError, unreachable } from './api.mjs';
-import { betaStatus, formatCreditDeadline } from './beta.mjs';
+import { betaEnds, betaStatus, formatCreditDeadline } from './beta.mjs';
 import { ask, confirm, interactive } from './prompt.mjs';
 import * as local from './local-sandbox.mjs';
 import { AGENTS } from './agents.mjs';
@@ -136,7 +136,7 @@ export async function packArchive(root, files) {
 export async function creditPlan() {
   let beta;
   try { beta = await betaStatus(); } catch { return { plan: 'none', beta: null }; }
-  const deadlinePassed = beta?.credit_expires_at && Date.parse(beta.credit_expires_at) <= Date.now();
+  const deadlinePassed = betaEnds(beta) && Date.parse(betaEnds(beta)) <= Date.now();
   if (beta && !beta.sandbox_consumed && deadlinePassed && (beta.entitled || beta.credit_usd)) return { plan: 'expired', beta };
   if (beta?.entitled && !beta.sandbox_consumed) return { plan: 'use', beta };
   return { plan: 'none', beta };
@@ -163,15 +163,14 @@ export async function create(flags) {
   // The same files, packed the same way, as a cloud sandbox gets: only the copy stays here.
   if (flags.local) return local.create(localName, { root, files, skipped, total, archive: await pack(root, files) });
 
-  // A local sandbox never uses beta credit.
+  // A local sandbox never uses the beta grant.
   const { plan, beta } = await creditPlan();
   if (plan === 'expired') {
-    say('Your $10 beta credit has expired: the 3 days ran out, and unused credit does not carry over.');
-    if (!interactive()) throw new Error('Beta credit expired; no sandbox was created. Ask RayTrace for a new code to try again.');
-    if (!(await confirm('Create a plain sandbox without beta credit?', false))) { say('Not created.'); return; }
+    say('Your free beta sandbox has expired: its 3 days ran out.');
+    if (!interactive()) throw new Error('Free beta sandbox expired; no sandbox was created. Ask RayTrace for a new code to try again.');
+    if (!(await confirm('Create a regular sandbox instead?', false))) { say('Not created.'); return; }
   } else if (plan === 'use') {
-    say(`Using your $${beta.credit_usd ?? 10} beta credit (OpenRouter) on this sandbox`
-      + `${beta.credit_expires_at ? ` — credit ends ${formatCreditDeadline(beta.credit_expires_at)}` : ''}.`);
+    say(`This is your free beta sandbox${betaEnds(beta) ? `, until ${formatCreditDeadline(betaEnds(beta))}` : ''}.`);
   }
   const useCredit = plan === 'use';
   say(`Packing ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root}`);
@@ -183,19 +182,20 @@ export async function create(flags) {
     box = await upload(archive, name, useCredit);
   } catch (error) {
     if (!useCredit || !isCreditRefusal(error)) throw error;
-    say(error.status === 410 ? 'Your beta credit expired before the sandbox was created.'
-      : 'Your beta credit was already used on another sandbox.');
-    if (!interactive() || !(await confirm('Create a plain sandbox without beta credit?', false))) {
-      throw new Error('Beta credit not applied; no sandbox was created.');
+    say(error.status === 410 ? 'Your free beta sandbox expired before it was created.'
+      : 'Your free beta sandbox was already created.');
+    if (!interactive() || !(await confirm('Create a regular sandbox instead?', false))) {
+      throw new Error('Not created as your free beta sandbox; no sandbox was created.');
     }
     box = await upload(archive, name, false);
   }
   say(`\nSandbox ${box.id} is running.`);
   if (box.credit_applied) {
-    say(`Beta credit applied: $${box.credit_usd ?? 10} (OpenRouter)${box.credit_expires_at ? `, ends ${formatCreditDeadline(box.credit_expires_at)}` : ''}. This sandbox shows as Beta in the dashboard.`);
+    say(`Your free beta sandbox${betaEnds(box) ? `, until ${formatCreditDeadline(betaEnds(box))}` : ''}. It shows as Beta in the dashboard.`);
   }
   say(box.transcripts ? 'Claude Code sessions in it are recorded.'
     : `Claude Code transcripts are off: ${box.transcripts_off}. Commands are still recorded.`);
+  say('The first time, Claude Code (or Codex) asks you to sign in inside the sandbox: use your own account.');
   say(`Open it:  raytrace connect ${box.id}`);
 }
 
@@ -207,7 +207,7 @@ export async function list(flags = {}) {
     // The sandbox's creation time (seconds), or its container's once that is known.
     const created = typeof box.created === 'number' ? box.created * 1000 : Date.parse(box.created);
     const age = Math.round((Date.now() - created) / 60000);
-    const beta = box.beta ? `  Beta${typeof box.credit_usd === 'number' ? ` ($${Math.max(0, box.credit_usd - (box.credit_spent_usd ?? 0)).toFixed(2)} of $${box.credit_usd} left${box.credit_expires_at ? `, ends ${formatCreditDeadline(box.credit_expires_at)}` : ''})` : ''}` : '';
+    const beta = box.beta ? `  Beta${betaEnds(box) ? ` (until ${formatCreditDeadline(betaEnds(box))})` : ''}` : '';
     say(`${box.id}  ${String(box.status).padEnd(8)}  ${box.name}${beta}  (${age < 120 ? `${age} min` : `${Math.round(age / 60)} h`} old)`);
   }
 }
@@ -250,15 +250,14 @@ export async function destroy(id, flags) {
   else if (result.traces_deleted === false) say('Note: its traces could not be deleted; they may still show on the dashboard.');
 }
 
-/** Exported for tests: the warning shown when connecting to a beta sandbox
- * whose 3 days are up, or null. Model calls inside are refused by the
- * backend; the sandbox itself still opens. */
+/** Exported for tests: the warning shown when connecting to a free beta
+ * sandbox whose 3 days are up, or null. The backend stops it; its files stay. */
 export function betaExpiryWarning(beta, id, now = Date.now()) {
   if (!beta || beta.credited_sandbox_id !== id) return null;
-  const deadline = beta.credit_expires_at ? Date.parse(beta.credit_expires_at) : NaN;
+  const deadline = betaEnds(beta) ? Date.parse(betaEnds(beta)) : NaN;
   if (!beta.expired && !(deadline <= now)) return null;
-  return `Warning: your beta credit for this sandbox expired${beta.credit_expires_at ? ` (${formatCreditDeadline(beta.credit_expires_at, now)})` : ''}; `
-    + 'model calls in this sandbox will be refused. The sandbox itself still opens.';
+  return `Warning: your free beta sandbox expired${betaEnds(beta) ? ` (${formatCreditDeadline(betaEnds(beta), now)})` : ''}; `
+    + 'RayTrace stops it. Its files are kept.';
 }
 
 /** An interactive terminal in the sandbox, carried over one upgraded HTTP request.

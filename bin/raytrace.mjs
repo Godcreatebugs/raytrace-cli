@@ -37,7 +37,7 @@ Cloud sandboxes:
                                             --claude or --codex starts that agent in it at
                                             once, without approval prompts
   raytrace --code <code>                    beta invite: redeem a code RayTrace gave you for one
-                                            $10-credit sandbox (signed in first; also: raytrace code <code>)
+                                            free 3-day sandbox (signed in first; also: raytrace code <code>)
   raytrace sandbox list
   raytrace sandbox start|stop [id]
   raytrace sandbox destroy [id] [--yes] [--keep-traces]

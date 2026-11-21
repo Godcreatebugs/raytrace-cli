@@ -51,7 +51,8 @@ raytrace --code <code>
 raytrace sandbox create
 ```
 
-The code gives you one sandbox with $10 of model credit. Codes are single-use
-and expire 3 days after they're issued, and the credit expires 3 days after you
-redeem it. Your account and that sandbox show as **Beta** in the cloud dashboard
+The code gives you one free cloud sandbox for 3 days. Codes are single-use and
+expire 3 days after they're issued, and the sandbox's 3 days start when you
+redeem it. Inside it, sign in to Claude Code or Codex with your own account:
+RayTrace records the session and doesn't provide model access. Your account and that sandbox show as **Beta** in the cloud dashboard
 until then.

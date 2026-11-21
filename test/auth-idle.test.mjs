@@ -23,9 +23,9 @@ test('connect warning only for the credited sandbox, once its 3 days are up', ()
   const sid = 'rtp-' + 'a'.repeat(32);
   const past = new Date(now - 60_000).toISOString();
   const warning = betaExpiryWarning({ credited_sandbox_id: sid, credit_expires_at: past, expired: true }, sid, now);
-  assert.match(warning, /beta credit for this sandbox expired/);
-  assert.match(warning, /model calls in this sandbox will be refused/);
-  assert.match(warning, /still opens/);
+  assert.match(warning, /free beta sandbox expired/);
+  assert.match(warning, /RayTrace stops it/);
+  assert.match(warning, /files are kept/);
 
   const live = new Date(now + 60_000).toISOString();
   assert.equal(betaExpiryWarning({ credited_sandbox_id: sid, credit_expires_at: live, expired: false }, sid, now), null);
