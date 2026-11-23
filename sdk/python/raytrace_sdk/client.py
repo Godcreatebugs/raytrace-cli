@@ -218,7 +218,7 @@ class _Transport:
 
     def request(self, method: str, path: str, *, headers: dict[str, str] | None = None,
                 body: Any = None, timeout: float = 120.0) -> tuple[int, Any]:
-        req_headers = {'Authorization': f'Bearer {self.api_key}', 'User-Agent': 'raytrace-python-sdk/0.1.0',
+        req_headers = {'Authorization': f'Bearer {self.api_key}', 'User-Agent': 'raytrace-python-sdk/0.2.1',
                        **(headers or {})}
         raw_body: bytes | None
         if body is None:
