@@ -1,6 +1,6 @@
 {
   "name": "@raytrace-cli/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript/JavaScript SDK for RayTrace cloud sandboxes: create, run commands, stop, start and destroy over the /v1 API",
   "type": "module",
   "license": "MIT",
@@ -11,7 +11,12 @@
     "directory": "sdk/ts"
   },
   "bugs": "https://github.com/Godcreatebugs/raytrace-cli/issues",
-  "keywords": ["raytrace", "sandbox", "coding-agents", "sdk"],
+  "keywords": [
+    "raytrace",
+    "sandbox",
+    "coding-agents",
+    "sdk"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },
