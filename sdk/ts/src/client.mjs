@@ -62,7 +62,7 @@ function buildTarGzWithModes(files, modes = new Map()) {
   }
   for (const [rawPath, content] of entries) {
     const rel = String(rawPath).replace(/^\/+/, '');
-    if (!rel || rel.includes('..') || Buffer.byteLength(rel, 'utf8') > 99) {
+    if (!rel || rel.split(/[\\/]/).includes('..') || Buffer.byteLength(rel, 'utf8') > 99) {
       throw new Error(`Invalid archive file path: ${rawPath}`);
     }
     const data = Buffer.isBuffer(content) ? content : Buffer.from(content);
