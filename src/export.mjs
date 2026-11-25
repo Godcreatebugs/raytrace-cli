@@ -188,10 +188,14 @@ export async function exportCommand(traceId, { format = 'markdown', output = nul
 
   if (output) {
     const outPath = resolve(output);
-    if (existsSync(outPath)) {
-      throw new Error(`File already exists: ${outPath}. Refusing to overwrite.`);
+    try {
+      writeFileSync(outPath, content, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw new Error(`File already exists: ${outPath}. Refusing to overwrite.`);
+      }
+      throw error;
     }
-    writeFileSync(outPath, content, { mode: 0o600 });
     return content;
   }
 
