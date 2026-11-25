@@ -51,7 +51,20 @@ export async function call(method, path, { body, headers = {}, autoLogin = true 
   } catch {
     throw unreachable(url);
   }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(data.error || `HTTP ${response.status}`, { status: response.status, data });
+  let text;
+  try {
+    text = await response.text();
+  } catch {
+    throw unreachable(url);
+  }
+  let data = {};
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (response.ok) throw new ApiError('Invalid JSON response from RayTrace.', { status: response.status });
+    }
+  }
+  if (!response.ok) throw new ApiError(data?.error || `HTTP ${response.status}`, { status: response.status, data });
   return data;
 }
