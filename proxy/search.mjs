@@ -157,7 +157,12 @@ function parsePipe(text, errors) {
   m = trimmed.match(/^timechart\s+count(?:\s+by\s+([a-z_]+))?(?:\s+span=(\d+)([mhd]))?$/i);
   if (m) {
     const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[(m[3] ?? 'd').toLowerCase()];
-    return { type: 'timechart', by: m[1]?.toLowerCase() ?? null, spanMs: unit * Number(m[2] ?? 1) };
+    const spanMs = unit * Number(m[2] ?? 1);
+    if (!Number.isSafeInteger(spanMs) || spanMs <= 0) {
+      errors.push('Timechart span is out of range. Use a positive number of minutes, hours, or days.');
+      return null;
+    }
+    return { type: 'timechart', by: m[1]?.toLowerCase() ?? null, spanMs };
   }
   errors.push(`Unsupported pipe: | ${trimmed.slice(0, 60)}`);
   return null;
