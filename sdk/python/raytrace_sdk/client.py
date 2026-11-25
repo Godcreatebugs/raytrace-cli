@@ -443,6 +443,8 @@ class _SandboxesResource:
                 status = error.status if isinstance(error, RayTraceError) else 0
                 failed = RayTraceError(f'Sandbox {sandbox.id} was created, but '
                                        + re.sub(r'^Could not', 'could not', str(error)), status=status,
+                                       code=getattr(error, 'code', None),
+                                       topup_url=getattr(error, 'topup_url', None),
                                        body=getattr(error, 'body', None))
                 failed.sandbox = sandbox
                 raise failed from error
