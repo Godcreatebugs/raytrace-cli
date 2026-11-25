@@ -210,13 +210,15 @@ function dateBound(value, upper) {
 function buildWhere(parsed, { fromMs = null, toMs = null, exclude = null } = {}) {
   const clauses = [];
   const params = [];
-  let from = fromMs;
-  let to = toMs;
   for (const filter of parsed.filters) {
     if (filter.field === exclude) continue;
     const not = filter.negated ? 'NOT ' : '';
-    if (filter.field === 'after') { const b = dateBound(filter.value, false); if (b != null) from = from == null ? b : Math.max(from, b); continue; }
-    if (filter.field === 'before') { const b = dateBound(filter.value, true); if (b != null) to = to == null ? b : Math.min(to, b); continue; }
+    if (filter.field === 'after' || filter.field === 'before') {
+      const upper = filter.field === 'before';
+      const bound = dateBound(filter.value, upper);
+      if (bound != null) { clauses.push(`${not}(ts_ms ${upper ? '<=' : '>='} ?)`); params.push(bound); }
+      continue;
+    }
     if (EQUALITY[filter.field]) {
       const column = EQUALITY[filter.field];
       if (filter.value.endsWith('*')) { clauses.push(`${not}(${column} LIKE ? ESCAPE '\\')`); params.push(`${likeEscape(filter.value.slice(0, -1))}%`); }
@@ -232,8 +234,8 @@ function buildWhere(parsed, { fromMs = null, toMs = null, exclude = null } = {})
       clauses.push(`${not}(session_id = ? OR session_external = ?)`); params.push(filter.value, filter.value);
     }
   }
-  if (from != null) { clauses.push('ts_ms >= ?'); params.push(from); }
-  if (to != null) { clauses.push('ts_ms <= ?'); params.push(to); }
+  if (fromMs != null) { clauses.push('ts_ms >= ?'); params.push(fromMs); }
+  if (toMs != null) { clauses.push('ts_ms <= ?'); params.push(toMs); }
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
