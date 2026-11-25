@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "raytrace-sdk"
-version = "0.1.0"
+version = "0.2.10"
 description = "Python SDK for RayTrace cloud sandboxes: create, run commands, stop, start and destroy over the /v1 API"
 readme = "README.md"
 license = "MIT"
