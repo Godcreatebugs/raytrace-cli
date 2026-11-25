@@ -273,9 +273,9 @@ const GROUP_EXPR = {
 function runStats(db, parsed, range) {
   const { pipe } = parsed;
   const { from, where, params } = scopedWhere(parsed, range);
+  const expr = pipe.by && Object.hasOwn(GROUP_EXPR, pipe.by) ? GROUP_EXPR[pipe.by] : null;
+  if (pipe.by && !expr) return { mode: pipe.type, rows: [], error: `Cannot group by ${pipe.by}` };
   if (pipe.type === 'stats') {
-    const expr = pipe.by ? GROUP_EXPR[pipe.by] : null;
-    if (pipe.by && !expr) return { mode: 'stats', rows: [], error: `Cannot group by ${pipe.by}` };
     const agg = pipe.agg === 'avg_duration' ? 'ROUND(AVG(se.duration_ms))' : 'COUNT(*)';
     const sql = expr
       ? `SELECT ${expr} AS k, ${agg} AS v, COUNT(*) AS n ${from} WHERE ${where} GROUP BY k ORDER BY ${pipe.agg === 'avg_duration' ? 'v DESC' : 'n DESC'} LIMIT 50`
@@ -283,8 +283,6 @@ function runStats(db, parsed, range) {
     return { mode: 'stats', agg: pipe.agg, by: pipe.by, rows: db.prepare(sql).all(...params).map((r) => ({ key: r.k ?? (pipe.by ? '(none)' : '(all)'), value: r.v ?? 0, count: r.n })) };
   }
   // timechart
-  const expr = pipe.by ? GROUP_EXPR[pipe.by] : null;
-  if (pipe.by && !expr) return { mode: 'timechart', rows: [], error: `Cannot group by ${pipe.by}` };
   const bucket = `(se.ts_ms / ${pipe.spanMs}) * ${pipe.spanMs}`;
   const rows = db.prepare(`SELECT ${bucket} AS t, ${expr ? `${expr} AS k,` : 'NULL AS k,'} COUNT(*) AS n ${from} WHERE ${where} GROUP BY t${expr ? ', k' : ''} ORDER BY t`).all(...params);
   const noneLabel = pipe.by ? '(none)' : '(all)';
