@@ -24,7 +24,7 @@ export function redact(value) {
 export function parseSseResponse(body) {
   const events = [];
   let terminalResponse = null;
-  for (const frame of body.toString('utf8').replace(/\r\n/g, '\n').split('\n\n')) {
+  for (const frame of body.toString('utf8').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n\n')) {
     const data = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
     if (!data || data === '[DONE]') continue;
     try {
