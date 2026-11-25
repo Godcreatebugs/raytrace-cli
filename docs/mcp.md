@@ -98,7 +98,7 @@ This is the full list of tools exposed by `raytrace mcp`.
 | Tool | What it does |
 |---|---|
 | `login` | signs in to RayTrace (cloud only): shows a code to approve in the browser |
-| `create_sandbox` | copies the open Git project into a new sandbox. `local: true` for one on your machine, `agent: "codex"` to open it with Codex, `connect: false` to skip opening a terminal |
+| `create_sandbox` | copies the open Git project into a new sandbox. `local: true` for one on your machine, `agent: "codex"` to open it with Codex, `connect: false` to skip opening a terminal, `github: true` to also make it a clone of the project's GitHub repository its agent can push to (`github_repo` for another; see [Connect GitHub](cloud.md#connect-github)) |
 | `connect_sandbox` | opens a terminal in an existing sandbox with Claude Code (default), Codex (`agent: "codex"`) or a plain shell (`agent: "none"`); starts it first if it's stopped |
 | `list_sandboxes`, `sandbox_status` | your local and cloud sandboxes, and one sandbox's details or creation progress |
 | `start_sandbox`, `stop_sandbox` | stopping keeps the files |
