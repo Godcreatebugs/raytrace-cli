@@ -28,6 +28,7 @@ type SearchResult = {
   mode: 'events' | 'stats' | 'timechart'; errors?: string[]; error?: string;
   total?: number; hits?: Hit[]; summary?: { total: number; failed: number; mismatched: number; http_errors: number };
   histogram?: { t: number; total: number; failed: number }[];
+  histogramBucketMs?: number;
   facets?: Record<string, Facet[]>;
   rows?: Record<string, string | number | null>[]; agg?: string; by?: string | null; series?: string[];
 };
@@ -157,7 +158,7 @@ export function SearchView({ initialQuery = '', onQuery, onOpenCall, onOpenTrace
 
   const summary = result?.summary;
   const histogram = (result?.histogram ?? []).map((row) => ({ ...row, other: Math.max(row.total - row.failed, 0) }));
-  const bucketMs = histogram.length > 1 ? histogram[1].t - histogram[0].t : 86_400_000;
+  const bucketMs = result?.histogramBucketMs ?? 86_400_000;
 
   return <section className="rt-view rt-search-view">
     <header className="rt-view-head"><div><span className="eyebrow">SEARCH</span><h1>What the agents did</h1></div></header>

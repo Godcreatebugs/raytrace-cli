@@ -398,6 +398,7 @@ export function runSearch(db, { q = '', fromMs = null, toMs = null, limit = 50, 
     mode: 'events', query: q, errors: parsed.errors, total,
     limit: boundedLimit, offset: boundedOffset, hits,
     summary: { total: summaryRow.total, failed: summaryRow.failed ?? 0, mismatched: summaryRow.mismatched ?? 0, http_errors: summaryRow.http_errors ?? 0 },
+    histogramBucketMs: bucketMs,
     histogram: histogram.map((row) => ({ t: row.t, total: row.total, failed: row.failed ?? 0 })),
     facets: {
       outcome: facetFor('outcome', 'se.outcome', 5),
