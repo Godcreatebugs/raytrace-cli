@@ -53,9 +53,7 @@ isolated copy of the project, where it cannot see your machine. And the record
 of what happened is taken from outside that sandbox, so the agent cannot turn
 it off or edit it.
 
-<video src="docs/videos/why-sandboxing.mp4" controls width="800" title="Why we built RayTrace">
-  <a href="docs/videos/why-sandboxing.mp4">Why we built RayTrace (1 min 47 sec)</a>
-</video>
+**[▶ Watch: Why we built RayTrace (1 min 47 sec, MP4)](docs/videos/why-sandboxing.mp4)**
 
 *Why we built RayTrace — the gap between what an agent reports and what actually ran.*
 
@@ -108,9 +106,9 @@ raytrace open                               # run in another terminal to open th
 
 The npm package needs **Node.js 22.16 or newer** (`node --version`) on macOS or
 Linux. The PyPI package installs the same CLI with its own Node.js, so you
-don't need Node on the machine. Windows is experimental. Where this page says
-`npx -y @raytrace-cli/cli@latest`, use `uvx --from raytrace-cli raytrace`
-instead.
+don't need Node on the machine. Windows is experimental. Where the docs say
+`npx -y @raytrace-cli/cli@latest` (for example in [MCP setup](docs/mcp.md)),
+use `uvx --from raytrace-cli raytrace` instead.
 
 Or skip the commands and ask your editor's agent: [set up MCP](docs/mcp.md),
 then say "create a local sandbox and connect this repo".
