@@ -31,7 +31,7 @@ export function normalizeErrorLine(text) {
     // Absolute paths: keep only the basename (the file that mattered).
     .replace(/(?:\/[\w.@+~-]+){2,}\/([\w.@+~-]+)/g, '<dir>/$1')
     .replace(/\b\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?z?)?\b/g, '<date>')
-    .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds|bytes|kb|mb|gb)\b/g, '<n>$1')
+    .replace(/\b\d+(?:\.\d+)?\s*(ms|s|sec|seconds|bytes|kb|mb|gb)\b/g, '<n>$1')
     .replace(/:\d+(?::\d+)?\b/g, ':<n>') // file:line:col
     .replace(/\bpid[= ]\d+\b/g, 'pid=<n>')
     .replace(/\s+/g, ' ')
