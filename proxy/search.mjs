@@ -331,6 +331,12 @@ function facetFromMatches(db, column, limit) {
     .all().filter((row) => row.k !== null && row.k !== '').map((row) => ({ value: String(row.k), count: row.n }));
 }
 
+function boundedInteger(value, fallback, minimum, maximum) {
+  const number = Number(value);
+  const finite = Number.isFinite(number) ? number : fallback;
+  return Math.trunc(Math.min(Math.max(finite || fallback, minimum), maximum));
+}
+
 /**
  * Run one search against the evidence db (node:sqlite handle).
  * Events mode returns hits + facets + histogram + summary; a pipe
@@ -343,8 +349,8 @@ export function runSearch(db, { q = '', fromMs = null, toMs = null, limit = 50, 
 
   const scoped = materialize(db, parsed, range);
   const MATCHED = 'FROM _raytace_m m JOIN search_events se ON se.rowid = m.rid';
-  const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const boundedOffset = Math.max(Number(offset) || 0, 0);
+  const boundedLimit = boundedInteger(limit, 50, 1, 200);
+  const boundedOffset = boundedInteger(offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const total = db.prepare('SELECT COUNT(*) AS n FROM _raytace_m').get().n;
   const snippetJoin = scoped.hasText ? 'JOIN search_fts ON search_fts.rowid = se.rowid AND search_fts MATCH ?' : '';
   const snippet = scoped.hasText ? `snippet(search_fts, -1, '[', ']', '…', 18) AS snippet,` : '';
@@ -413,7 +419,7 @@ export function topFailureSignatures(db, { fromMs = null, toMs = null, limit = 2
       (SELECT turn_id FROM search_events s2 WHERE s2.failure_signature = se.failure_signature ORDER BY s2.ts_ms DESC LIMIT 1) AS sample_turn,
       (SELECT external_call_id FROM search_events s2 WHERE s2.failure_signature = se.failure_signature ORDER BY s2.ts_ms DESC LIMIT 1) AS sample_call
     FROM search_events se WHERE ${clauses.join(' AND ')} GROUP BY failure_signature ORDER BY count DESC LIMIT ?`)
-    .all(...params, Math.min(Math.max(Number(limit) || 20, 1), 100));
+    .all(...params, boundedInteger(limit, 20, 1, 100));
   return rows.map((row) => ({ ...row,
     tools: (row.tools ?? '').split(',').filter(Boolean).slice(0, 4),
     exit_codes: (row.exit_codes ?? '').split(',').filter(Boolean).slice(0, 4),
