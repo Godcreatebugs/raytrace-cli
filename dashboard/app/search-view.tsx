@@ -59,9 +59,10 @@ function renderSnippet(text: string) {
 
 /** Replace (or append) one `field:value` filter in the query text. */
 function withFilter(query: string, field: string, value: string) {
-  const pattern = new RegExp(`(^|\\s)-?${field}:(\\S+)`, 'g');
+  const pattern = new RegExp(`(^|\\s)-?${field}:(?:"[^"]*"|\\S+)`, 'g');
   const cleaned = query.replace(pattern, ' ').replace(/\s+/g, ' ').trim();
-  return `${cleaned} ${field}:${value}`.trim();
+  const formatted = /[\s|]/.test(value) ? `"${value.replace(/"/g, '')}"` : value;
+  return `${cleaned} ${field}:${formatted}`.trim();
 }
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined,

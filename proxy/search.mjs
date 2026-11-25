@@ -140,11 +140,11 @@ function splitPipe(input) {
 
 function tokenize(input) {
   const tokens = [];
-  const pattern = /(-)?"([^"]*)"|(-)?(\S+)/g;
+  const pattern = /(-)?(?:([a-z_]+):)?"([^"]*)"|(-)?(\S+)/gi;
   let match;
   while ((match = pattern.exec(input)) !== null) {
-    if (match[2] !== undefined) tokens.push({ value: match[2], phrase: true, negated: Boolean(match[1]) });
-    else tokens.push({ value: match[4], phrase: false, negated: Boolean(match[3]) });
+    if (match[3] !== undefined) tokens.push({ value: match[2] ? `${match[2]}:${match[3]}` : match[3], phrase: !match[2], quoted: true, negated: Boolean(match[1]) });
+    else tokens.push({ value: match[5], phrase: false, quoted: false, negated: Boolean(match[4]) });
   }
   return tokens;
 }
@@ -184,8 +184,9 @@ export function parseSearchQuery(input = '') {
         errors.push(`Unknown field: ${fieldMatch[1]}`);
       }
     }
-    const prefix = !token.phrase && token.value.endsWith('*') && token.value.length > 1;
-    text.push({ value: prefix ? token.value.slice(0, -1) : token.value, phrase: token.phrase, prefix, negated: token.negated });
+    const phrase = token.phrase || token.quoted;
+    const prefix = !phrase && token.value.endsWith('*') && token.value.length > 1;
+    text.push({ value: prefix ? token.value.slice(0, -1) : token.value, phrase, prefix, negated: token.negated });
   }
   return { text, filters, pipe: parsePipe(pipeText, errors), errors };
 }
