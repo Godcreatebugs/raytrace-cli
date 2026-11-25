@@ -101,13 +101,13 @@ function toolArgs(argsRaw) {
 /** How a tool call runs: 'file' (a native file tool) and 'agent' start no
  * program; anything else is a 'command' the sandbox can be expected to see. */
 export function callKind(name) {
-  return name in FILE_TOOLS ? 'file' : AGENT_TOOLS.has(name) || String(name ?? '').startsWith('mcp__') ? 'agent' : 'command';
+  return Object.hasOwn(FILE_TOOLS, name) ? 'file' : AGENT_TOOLS.has(name) || String(name ?? '').startsWith('mcp__') ? 'agent' : 'command';
 }
 
 /** The file a native file tool worked on, stated by its arguments rather than
  * read out of a command line; null for any other tool. */
 export function nativeFileOperation(name, argsRaw) {
-  if (!(name in FILE_TOOLS)) return null;
+  if (!Object.hasOwn(FILE_TOOLS, name)) return null;
   const args = toolArgs(argsRaw) ?? {};
   const path = [args.file_path, args.notebook_path, args.path].find((value) => typeof value === 'string' && value);
   // A search that prints matching lines puts file contents in context.

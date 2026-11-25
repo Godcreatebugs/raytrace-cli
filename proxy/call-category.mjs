@@ -327,7 +327,7 @@ export function shellCategory(command) {
 export function callCategory(name, argsRaw) {
   const rule = (category) => ({ category, source: 'rule', command: null });
   const tool = String(name ?? '');
-  if (tool in TOOLS) return rule(TOOLS[tool]);
+  if (Object.hasOwn(TOOLS, tool)) return rule(TOOLS[tool]);
   if (tool.startsWith('mcp__')) return rule('delegate');
   const args = argsOf(argsRaw);
   const raw = typeof argsRaw === 'string' ? argsRaw : JSON.stringify(argsRaw ?? '');
