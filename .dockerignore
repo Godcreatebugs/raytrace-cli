@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+dist
+docs
+dashboard
+sdk
+python
+test
+skills
+**/*.test.mjs
+**/test_*.py
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+*.tgz
