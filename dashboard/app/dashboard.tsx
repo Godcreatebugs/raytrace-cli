@@ -36,6 +36,7 @@ import { ResizeHandle } from './resize-handle';
 import { api } from './api';
 import { ConnectionStatus, GitHubStarLink, ThemeButton, WaveAnimationButton } from './motion/controls';
 import { LoadingState } from './loading-state';
+import { StarPopup, recordStarPromptAction } from './star-popup';
 
 export type View = 'prompts' | 'search' | 'story' | 'sandboxes' | 'scan' | 'calls' | 'changes' | 'sandbox' | 'context' | 'thought' | 'playground';
 type Place = { view: View; trace: string; call: string | null; step: string | null; box: string; q: string };
@@ -74,6 +75,7 @@ export function Dashboard({ views = VIEWS, offline = 'PROXY OFFLINE', footer = n
   const [loaded, setLoaded] = useState(false);
   const [place, setPlace] = useState<Place>({ view: 'prompts', trace: '', call: null, step: null, box: '', q: '' });
   const [navSearch, setNavSearch] = useState('');
+  const [starHandled, setStarHandled] = useState(false);
   const shell = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -168,7 +170,7 @@ export function Dashboard({ views = VIEWS, offline = 'PROXY OFFLINE', footer = n
       {/* Nothing is known until the first load answers (the whole history,
           which can take a second): neither connected nor offline yet. */}
       <div className="nav-bottom">
-        <div className="rt-nav-tools"><GitHubStarLink /></div>
+        <div className="rt-nav-tools"><GitHubStarLink onStarClick={() => { setStarHandled(true); void recordStarPromptAction('opened', 'sidebar'); }} /></div>
         <div className="nav-status"><ConnectionStatus loaded={loaded} connected={connected} offline={offline} /><WaveAnimationButton /><ThemeButton /></div>
         {footer}
       </div>
@@ -224,5 +226,7 @@ export function Dashboard({ views = VIEWS, offline = 'PROXY OFFLINE', footer = n
       onRerunWithout={shows('playground') ? (exchangeId, callId) => go({ view: 'playground', trace: trace.id, step: exchangeId, call: callId }) : undefined} /> : noPrompt())}
 
     {place.view === 'thought' && shows('thought') && (trace ? <ChainOfThoughtView key={trace.id} trace={trace} focusCall={place.call} /> : noPrompt())}
+
+    <StarPopup promptCount={traces.filter((item) => !item.forkId).length} connected={connected} suppressed={starHandled} />
   </main>;
 }

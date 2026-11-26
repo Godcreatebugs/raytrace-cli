@@ -25,7 +25,7 @@ configureApi({ fetch: (path, init) => fetch(path, init) });
 
 // The page is read from disk, so after an upgrade an older proxy still running
 // serves it, and answers its new sections "Unknown local endpoint". Say why.
-const PROXY_API = 5;
+const PROXY_API = 6;
 function ProxyNotice() {
   const [outdated, setOutdated] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
@@ -41,4 +41,7 @@ function ProxyNotice() {
   </div>;
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><ProxyNotice /><Dashboard views={VIEWS} /></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode>
+  <ProxyNotice />
+  <Dashboard views={VIEWS} footer={<a className="rt-site-link" href="https://raytracer.si" target="_blank" rel="noopener noreferrer">raytracer.si ↗</a>} />
+</StrictMode>);

@@ -967,6 +967,11 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
       });
     },
 
+    /** Total number of recorded prompt turns across all agents. */
+    turnCount() {
+      return Number(q('SELECT COUNT(*) AS n FROM agent_turns').get()?.n ?? 0);
+    },
+
     close() { db.close(); },
   };
 

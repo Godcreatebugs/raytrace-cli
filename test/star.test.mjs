@@ -3,7 +3,19 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { maybeStarPrompt, STAR_LINE, STAR_URL } from '../src/star.mjs';
+import {
+  maybeStarPrompt,
+  recordedPromptCount,
+  readStarPromptState,
+  recordStarPromptState,
+  STAR_PROMPT_FILE,
+  STAR_PROMPT_THRESHOLD,
+  STAR_URL,
+  WEBSITE_URL,
+  starQuestion,
+} from '../src/star.mjs';
+import { starPromptStatus } from '../proxy/star-prompt.mjs';
+import { openEvidenceStore } from '../proxy/evidence-store.mjs';
 import { setup } from '../src/commands.mjs';
 
 const tty = { isTTY: true };
@@ -14,225 +26,294 @@ function homeDir() {
   return mkdtempSync(join(tmpdir(), 'raytrace-star-'));
 }
 
-function calls(home, flags = {}, extra = {}) {
+async function runPrompt(home, flags = {}, extra = {}) {
   const lines = [];
-  const shown = maybeStarPrompt(flags, {
+  const opened = [];
+  const questions = [];
+  const answer = extra.answer ?? false;
+  const shown = await maybeStarPrompt(flags, {
     ...interactive,
     home,
+    prompts: STAR_PROMPT_THRESHOLD,
     log: (line) => lines.push(line),
+    openUrl: (url) => opened.push(url),
+    confirm: async (q, fallback) => {
+      questions.push({ q, fallback });
+      if (extra.confirmError) throw extra.confirmError;
+      return answer;
+    },
     ...extra,
   });
-  return { shown, lines, flag: existsSync(join(home, 'star-prompted')) };
+  return {
+    shown,
+    lines,
+    opened,
+    questions,
+    state: readStarPromptState(home),
+    hasFile: existsSync(join(home, STAR_PROMPT_FILE)),
+  };
 }
 
-describe('star prompt', { concurrency: false }, () => {
-  test('the line is one short sentence and names the repo', () => {
-    assert.equal(STAR_LINE.includes('\n'), false);
-    assert.equal(STAR_LINE.includes(STAR_URL), true);
+describe('shared star-prompt state', { concurrency: false }, () => {
+  test('threshold is 3 prompts and URLs point to the CLI repo and website', () => {
+    assert.equal(STAR_PROMPT_THRESHOLD, 3);
     assert.equal(STAR_URL, 'https://github.com/Godcreatebugs/raytrace-cli');
+    assert.equal(WEBSITE_URL, 'https://raytracer.si');
   });
 
-  test('shows once on an interactive terminal, then stays quiet', () => {
+  test('starPromptStatus becomes eligible at 3 prompts and stops after any recorded action', () => {
     const home = homeDir();
     try {
-      const first = calls(home);
+      assert.equal(starPromptStatus({ dataDir: home, prompts: 0, env: {} }).eligible, false);
+      assert.equal(starPromptStatus({ dataDir: home, prompts: 2, env: {} }).eligible, false);
+
+      const ready = starPromptStatus({ dataDir: home, prompts: 3, env: {} });
+      assert.equal(ready.eligible, true);
+      assert.equal(ready.prompts, 3);
+      assert.equal(ready.status, 'pending');
+      assert.equal(ready.url, STAR_URL);
+      assert.equal(ready.website_url, WEBSITE_URL);
+
+      assert.equal(starPromptStatus({ dataDir: home, prompts: 5, env: { RAYTRACE_NO_STAR_PROMPT: '1' } }).eligible, false);
+
+      const saved = recordStarPromptState(home, 'already_starred', 'dashboard', 1_700_000_000_000);
+      assert.equal(saved.status, 'already_starred');
+      assert.equal(saved.source, 'dashboard');
+
+      const after = starPromptStatus({ dataDir: home, prompts: 10, env: {} });
+      assert.equal(after.eligible, false);
+      assert.equal(after.status, 'already_starred');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('recordStarPromptState rejects invalid actions', () => {
+    const home = homeDir();
+    try {
+      assert.throws(() => recordStarPromptState(home, 'auto_star'), /Invalid star prompt action/);
+      assert.equal(existsSync(join(home, STAR_PROMPT_FILE)), false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('turnCount and recordedPromptCount count all prompts across agents', async () => {
+    const home = homeDir();
+    const dbFile = join(home, 'evidence.db');
+    try {
+      assert.equal(await recordedPromptCount(dbFile), 0);
+      const store = openEvidenceStore(dbFile);
+      try {
+        assert.equal(store.turnCount(), 0);
+        const addTurn = (sessionId, provider, route, prompt, id, offsetSec) => store.recordExchange({
+          event_type: 'model.exchange',
+          span_id: id,
+          trace_id: `trace-${id}`,
+          session_id: sessionId,
+          session_started_at: '2026-11-26T12:00:00.000Z',
+          provider,
+          route,
+          method: 'POST',
+          timestamp: new Date(1_790_000_000_000 + offsetSec * 1000).toISOString(),
+          completed_at: new Date(1_790_000_000_400 + offsetSec * 1000).toISOString(),
+          request: {
+            headers: { 'content-type': 'application/json' },
+            bytes: 10,
+            sha256: `req-${id}`,
+            payload: route === '/v1/messages'
+              ? { model: 'claude-sonnet', messages: [{ role: 'user', content: prompt }] }
+              : { model: 'gpt-5', input: [{ role: 'user', type: 'message', content: prompt }] },
+          },
+          response: {
+            status: 200,
+            headers: {},
+            bytes: 20,
+            sha256: `res-${id}`,
+            payload: route === '/v1/messages'
+              ? { content: [{ type: 'text', text: 'ok' }] }
+              : { output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }] },
+          },
+        });
+        addTurn('s1', 'anthropic', '/v1/messages', 'first prompt', 'ex-1', 1);
+        addTurn('s1', 'anthropic', '/v1/messages', 'second prompt', 'ex-2', 2);
+        addTurn('s2', 'openai', '/v1/responses', 'third prompt', 'ex-3', 3);
+        assert.equal(store.turnCount(), 3);
+      } finally {
+        store.close();
+      }
+      assert.equal(await recordedPromptCount(dbFile), 3);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('CLI star prompt', { concurrency: false }, () => {
+  test('does not ask before 3 recorded prompts and does not write state', async () => {
+    const home = homeDir();
+    try {
+      for (const prompts of [0, 1, 2]) {
+        const res = await runPrompt(home, {}, { prompts, answer: true });
+        assert.equal(res.shown, false);
+        assert.equal(res.questions.length, 0);
+        assert.equal(res.opened.length, 0);
+        assert.equal(res.hasFile, false);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('when user answers yes at >= 3 prompts, opens GitHub repo and remembers permanently', async () => {
+    const home = homeDir();
+    try {
+      const first = await runPrompt(home, {}, { prompts: 4, answer: true });
       assert.equal(first.shown, true);
-      assert.deepEqual(first.lines, [STAR_LINE]);
-      assert.equal(first.flag, true);
-      assert.equal(readFileSync(join(home, 'star-prompted'), 'utf8'), '1\n');
+      assert.equal(first.questions.length, 1);
+      assert.equal(first.questions[0].fallback, false);
+      assert.equal(first.questions[0].q.includes(starQuestion(4)), true);
+      assert.deepEqual(first.opened, [STAR_URL]);
+      assert.equal(first.state?.status, 'opened');
+      assert.equal(first.state?.source, 'cli');
 
-      const second = calls(home);
+      const second = await runPrompt(home, {}, { prompts: 10, answer: true });
       assert.equal(second.shown, false);
-      assert.deepEqual(second.lines, []);
+      assert.equal(second.questions.length, 0);
+      assert.deepEqual(second.opened, []);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test('RAYTRACE_NO_STAR_PROMPT=1 prints nothing and does not use up the one show', () => {
+  test('when user answers no, does not open repo and remembers permanently', async () => {
     const home = homeDir();
     try {
-      const skipped = calls(home, {}, { env: { RAYTRACE_NO_STAR_PROMPT: '1' } });
-      assert.equal(skipped.shown, false);
-      assert.deepEqual(skipped.lines, []);
-      assert.equal(skipped.flag, false);
+      const first = await runPrompt(home, {}, { prompts: 3, answer: false });
+      assert.equal(first.shown, true);
+      assert.deepEqual(first.opened, []);
+      assert.equal(first.state?.status, 'dismissed');
 
-      const later = calls(home);
-      assert.equal(later.shown, true);
-      assert.deepEqual(later.lines, [STAR_LINE]);
+      const second = await runPrompt(home, {}, { prompts: 8, answer: true });
+      assert.equal(second.shown, false);
+      assert.equal(second.questions.length, 0);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test('RAYTRACE_NO_STAR_PROMPT=true is the same opt-out', () => {
+  test('Ctrl-C during prompt does not throw and remembers dismissal', async () => {
     const home = homeDir();
     try {
-      const skipped = calls(home, {}, { env: { RAYTRACE_NO_STAR_PROMPT: 'true' } });
-      assert.equal(skipped.shown, false);
-      assert.equal(skipped.flag, false);
+      const res = await runPrompt(home, {}, { prompts: 3, confirmError: new Error('Cancelled.') });
+      assert.equal(res.shown, true);
+      assert.deepEqual(res.opened, []);
+      assert.equal(res.state?.status, 'dismissed');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test('a set CI variable prints nothing and does not use up the one show', () => {
+  test('already recorded from dashboard or sidebar suppresses CLI prompt', async () => {
     const home = homeDir();
     try {
-      for (const CI of ['true', '1', 'false']) {
-        const skipped = calls(home, {}, { env: { CI } });
-        assert.equal(skipped.shown, false, CI);
-        assert.equal(skipped.flag, false, CI);
+      recordStarPromptState(home, 'opened', 'sidebar');
+      const res = await runPrompt(home, {}, { prompts: 5, answer: true });
+      assert.equal(res.shown, false);
+      assert.equal(res.questions.length, 0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('opt-out env, CI, non-TTY, and machine-readable flags stay silent and do not use up the ask', async () => {
+    const home = homeDir();
+    try {
+      const suppressedCases = [
+        { flags: {}, extra: { env: { RAYTRACE_NO_STAR_PROMPT: '1' } } },
+        { flags: {}, extra: { env: { RAYTRACE_NO_STAR_PROMPT: 'true' } } },
+        { flags: {}, extra: { env: { CI: 'true' } } },
+        { flags: {}, extra: { env: { CI: 'false' } } },
+        { flags: {}, extra: { stdout: notty, stdin: tty } },
+        { flags: {}, extra: { stdout: tty, stdin: notty } },
+        { flags: { yes: true }, extra: {} },
+        { flags: { json: true }, extra: {} },
+        { flags: { quiet: true }, extra: {} },
+        { flags: { silent: true }, extra: {} },
+        { flags: { format: 'json' }, extra: {} },
+      ];
+      for (const item of suppressedCases) {
+        const skipped = await runPrompt(home, item.flags, { ...item.extra, answer: true });
+        assert.equal(skipped.shown, false);
+        assert.equal(skipped.hasFile, false);
       }
-      const later = calls(home);
+
+      const later = await runPrompt(home, {}, { answer: true });
       assert.equal(later.shown, true);
+      assert.deepEqual(later.opened, [STAR_URL]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test('no TTY on stdout or stdin prints nothing and does not use up the one show', () => {
-    const home = homeDir();
-    try {
-      const stdout = calls(home, {}, { stdout: notty, stdin: tty });
-      const stdin = calls(home, {}, { stdout: tty, stdin: notty });
-      assert.equal(stdout.shown, false);
-      assert.equal(stdin.shown, false);
-      assert.equal(stdout.flag, false);
-      assert.equal(stdin.flag, false);
-      assert.equal(calls(home).shown, true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test('json and quiet output prints nothing and does not use up the one show', () => {
-    const home = homeDir();
-    try {
-      for (const flags of [{ json: true }, { quiet: true }, { silent: true }, { format: 'json' }, { format: 'JSON' }]) {
-        const skipped = calls(home, flags);
-        assert.equal(skipped.shown, false, JSON.stringify(flags));
-        assert.deepEqual(skipped.lines, [], JSON.stringify(flags));
-        assert.equal(skipped.flag, false, JSON.stringify(flags));
-      }
-      assert.equal(calls(home).shown, true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test('a flag that cannot be saved does not throw or print', () => {
+  test('an unwritable home path does not throw or prompt', async () => {
     const dir = homeDir();
     const home = join(dir, 'not-a-directory');
     try {
       writeFileSync(home, 'occupied');
-      const lines = [];
-      const shown = maybeStarPrompt({}, { ...interactive, home, log: (line) => lines.push(line) });
-      assert.equal(shown, false);
-      assert.deepEqual(lines, []);
+      const res = await runPrompt(home, {}, { answer: true });
+      assert.equal(res.shown, false);
+      assert.equal(res.questions.length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-describe('star prompt during setup', { concurrency: false }, () => {
-  const previous = {};
-
-  function setTTY(value) {
-    Object.defineProperty(process.stdout, 'isTTY', { value, configurable: true });
-    Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true });
-  }
-
-  async function withHome(fn) {
+describe('raytrace setup does not show the old star prompt', { concurrency: false }, () => {
+  test('setup never prints a star URL or writes star-prompted', async () => {
     const home = mkdtempSync(join(tmpdir(), 'raytrace-star-setup-'));
     const claude = mkdtempSync(join(tmpdir(), 'raytrace-star-claude-'));
-    previous.home = process.env.RAYTRACE_HOME;
-    previous.claude = process.env.CLAUDE_CONFIG_DIR;
-    previous.ci = process.env.CI;
-    previous.noStar = process.env.RAYTRACE_NO_STAR_PROMPT;
-    previous.log = console.log;
-    previous.stdout = process.stdout.isTTY;
-    previous.stdin = process.stdin.isTTY;
+    const prev = {
+      home: process.env.RAYTRACE_HOME,
+      claude: process.env.CLAUDE_CONFIG_DIR,
+      ci: process.env.CI,
+      noStar: process.env.RAYTRACE_NO_STAR_PROMPT,
+      log: console.log,
+      stdout: process.stdout.isTTY,
+      stdin: process.stdin.isTTY,
+    };
     process.env.RAYTRACE_HOME = home;
     process.env.CLAUDE_CONFIG_DIR = claude;
     delete process.env.CI;
     delete process.env.RAYTRACE_NO_STAR_PROMPT;
     writeFileSync(join(home, 'config.env'), 'RAYTACE_PORT=1\n');
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
     const lines = [];
     console.log = (line = '') => lines.push(String(line));
     try {
-      return await fn({ home, lines });
+      await setup({ yes: true, 'no-claude-code': true, 'no-start': true });
+      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
+      assert.equal(existsSync(join(home, 'star-prompted')), false);
+      assert.equal(existsSync(join(home, STAR_PROMPT_FILE)), false);
+      assert.equal(readFileSync(join(home, 'config.env'), 'utf8').includes(STAR_URL), false);
     } finally {
-      console.log = previous.log;
-      if (previous.stdout === undefined) delete process.stdout.isTTY;
-      else Object.defineProperty(process.stdout, 'isTTY', { value: previous.stdout, configurable: true });
-      if (previous.stdin === undefined) delete process.stdin.isTTY;
-      else Object.defineProperty(process.stdin, 'isTTY', { value: previous.stdin, configurable: true });
-      if (previous.home === undefined) delete process.env.RAYTRACE_HOME;
-      else process.env.RAYTRACE_HOME = previous.home;
-      if (previous.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-      else process.env.CLAUDE_CONFIG_DIR = previous.claude;
-      if (previous.ci === undefined) delete process.env.CI;
-      else process.env.CI = previous.ci;
-      if (previous.noStar === undefined) delete process.env.RAYTRACE_NO_STAR_PROMPT;
-      else process.env.RAYTRACE_NO_STAR_PROMPT = previous.noStar;
+      console.log = prev.log;
+      if (prev.stdout === undefined) delete process.stdout.isTTY;
+      else Object.defineProperty(process.stdout, 'isTTY', { value: prev.stdout, configurable: true });
+      if (prev.stdin === undefined) delete process.stdin.isTTY;
+      else Object.defineProperty(process.stdin, 'isTTY', { value: prev.stdin, configurable: true });
+      if (prev.home === undefined) delete process.env.RAYTRACE_HOME;
+      else process.env.RAYTRACE_HOME = prev.home;
+      if (prev.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev.claude;
+      if (prev.ci === undefined) delete process.env.CI;
+      else process.env.CI = prev.ci;
+      if (prev.noStar === undefined) delete process.env.RAYTRACE_NO_STAR_PROMPT;
+      else process.env.RAYTRACE_NO_STAR_PROMPT = prev.noStar;
       rmSync(home, { recursive: true, force: true });
       rmSync(claude, { recursive: true, force: true });
     }
-  }
-
-  const flags = { yes: true, 'no-claude-code': true, 'no-start': true };
-
-  test('the first successful setup prints the line once, and the next setup does not', async () => {
-    await withHome(async ({ home, lines }) => {
-      setTTY(true);
-      await setup(flags);
-      const shown = lines.filter((line) => line === STAR_LINE);
-      assert.deepEqual(shown, [STAR_LINE]);
-      assert.equal(lines.at(-1), STAR_LINE);
-      assert.equal(existsSync(join(home, 'star-prompted')), true);
-      assert.equal(readFileSync(join(home, 'config.env'), 'utf8').includes(STAR_URL), false);
-
-      lines.length = 0;
-      await setup(flags);
-      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
-    });
-  });
-
-  test('setup in CI, without a TTY, or with quiet output does not print or record the ask', async () => {
-    await withHome(async ({ home, lines }) => {
-      setTTY(true);
-      process.env.CI = 'true';
-      await setup(flags);
-      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
-      assert.equal(existsSync(join(home, 'star-prompted')), false);
-
-      delete process.env.CI;
-      setTTY(false);
-      lines.length = 0;
-      await setup(flags);
-      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
-      assert.equal(existsSync(join(home, 'star-prompted')), false);
-
-      setTTY(true);
-      lines.length = 0;
-      await setup({ ...flags, quiet: true });
-      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
-      assert.equal(existsSync(join(home, 'star-prompted')), false);
-
-      lines.length = 0;
-      await setup(flags);
-      assert.equal(lines.filter((line) => line === STAR_LINE).length, 1);
-    });
-  });
-
-  test('a setup that fails does not record the ask', async () => {
-    await withHome(async ({ home, lines }) => {
-      setTTY(true);
-      await assert.rejects(() => setup({ ...flags, 'openrouter-key': "'\"`\nINJECTED=secret-not-to-log" }));
-      assert.equal(lines.some((line) => line.includes(STAR_URL)), false);
-      assert.equal(existsSync(join(home, 'star-prompted')), false);
-    });
   });
 });
