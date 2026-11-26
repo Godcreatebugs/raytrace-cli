@@ -21,6 +21,7 @@ import { portOf, readConfig } from './config.mjs';
 import { ensureToken } from '../proxy/local-token.mjs';
 import { viewerTokenFor } from '../proxy/request-policy.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
+import { maybeStarPrompt } from './star.mjs';
 
 const say = (line = '') => console.log(line);
 const VM = 'raytrace';
@@ -344,6 +345,7 @@ export async function stop(id) {
   id = pickId(id);
   if (vmStatus() === 'Running') projects(['stop', id]);
   say(`${registry()[id].name} stopped; its files are kept`);
+  await maybeStarPrompt();
 }
 
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
@@ -455,4 +457,5 @@ export async function shell(id, { agent } = {}) {
   say('Recorded commands, files and connections: raytrace open, then Sandbox evidence\n');
   projects(['shell', id, ...(agent ? ['--agent', agent] : [])], { inherit: true, check: false });
   say(`\nLeft ${name}. It is still running. Back in: raytrace connect ${name}   Stop it: raytrace sandbox stop ${name}`);
+  await maybeStarPrompt();
 }

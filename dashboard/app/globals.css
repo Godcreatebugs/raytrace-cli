@@ -863,3 +863,19 @@ button.rt-cell:not(:disabled):hover,.rt-cell:focus-visible,.rt-cell-on{outline-c
 .rt-story-node.active .rt-story-dot{border-color:var(--accent);background:var(--accent)}
 .rt-box h2 span{background:var(--accent-soft);color:var(--accent)}
 .rt-stat-bar span{background:var(--accent)}
+
+/* Local dashboard bottom-right GitHub star popup and sidebar website link. */
+.rt-site-link{display:inline-flex;align-items:center;justify-content:center;width:100%;padding:4px 6px;font-family:var(--mono);font-size:11px;color:var(--muted);text-decoration:none;border-radius:6px;transition:color .15s ease,background-color .15s ease}
+.rt-site-link:hover,.rt-site-link:focus-visible{color:var(--accent);background:var(--accent-soft);outline:none}
+.rt-star-popup{position:fixed;right:20px;bottom:20px;z-index:40;width:min(340px,calc(100vw - 32px));padding:15px 16px;border:1px solid color-mix(in srgb,var(--accent) 42%,var(--line));border-radius:12px;background:var(--panel);color:var(--ink);box-shadow:0 14px 36px light-dark(rgba(22,30,16,.14),rgba(0,0,0,.48));display:grid;gap:10px}
+.rt-star-popup-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.rt-star-popup-eyebrow{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--accent)}
+.rt-star-popup-close{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--muted);padding:0}
+.rt-star-popup-close:hover,.rt-star-popup-close:focus-visible{background:var(--accent-soft);color:var(--ink);outline:none}
+.rt-star-popup-copy{margin:0;font-size:12.5px;line-height:1.5;color:var(--muted)}
+.rt-star-popup-copy strong{color:var(--ink);font-weight:600}
+.rt-star-popup-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:2px}
+.rt-star-popup-cta{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:8px;font-size:12px;text-decoration:none}
+.rt-star-popup-secondary{border:0;background:transparent;padding:6px 4px;font-size:12px;color:var(--muted);border-radius:6px}
+.rt-star-popup-secondary:hover,.rt-star-popup-secondary:focus-visible{color:var(--ink);text-decoration:underline;outline:none}
+@media(max-width:520px){.rt-star-popup{right:12px;bottom:12px}}

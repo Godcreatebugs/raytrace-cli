@@ -39,10 +39,11 @@ export function MorphIcon({ first: First, second: Second, active, sparkle = fals
   </span>;
 }
 
-export function GitHubStarLink() {
+export function GitHubStarLink({ onStarClick }: { onStarClick?: () => void } = {}) {
   const [active, setActive] = useState(false);
   return <a className="rt-button rt-motion-button rt-github-star" href="https://github.com/Godcreatebugs/raytrace-cli"
-    target="_blank" rel="noreferrer" onMouseEnter={() => setActive(true)} onMouseLeave={() => setActive(false)}
+    target="_blank" rel="noreferrer" onClick={onStarClick}
+    onMouseEnter={() => setActive(true)} onMouseLeave={() => setActive(false)}
     onFocus={() => setActive(true)} onBlur={() => setActive(false)}>
     <MorphIcon first={Github} second={Star} active={active} sparkle />
     <span>Star on GitHub</span>
