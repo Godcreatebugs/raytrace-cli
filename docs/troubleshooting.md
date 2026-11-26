@@ -97,6 +97,13 @@ latest log lines for download progress or a concrete network error; a quiet
 terminal alone does not mean setup failed. Slow networks can take longer than
 the usual few minutes.
 
+VM creation, startup and provisioning print a status update every ten seconds,
+including elapsed time and the latest VM log line. Each step has a thirty-minute
+timeout. A failed or timed-out step prints its recent output, full log path and
+the `raytrace doctor` command. After fixing the reported problem, retry the same
+command: it reuses the existing VM and repeats unfinished provisioning. The
+timeout does not delete the VM or local sandboxes.
+
 If the download fails, check that your network can reach GitHub releases and
 the image/package URLs named in the log, then retry `raytrace sandbox create
 --local` from your repository. For a Lima download error, installing Lima 2.0+

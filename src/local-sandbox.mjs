@@ -21,6 +21,7 @@ import { portOf, readConfig } from './config.mjs';
 import { ensureToken } from '../proxy/local-token.mjs';
 import { viewerTokenFor } from '../proxy/request-policy.mjs';
 import { LIMA_VERSION, canDownload, checks, downloadLima, findLima } from './lima.mjs';
+import { runVmStep } from './vm-step.mjs';
 
 const say = (line = '') => console.log(line);
 const VM = 'raytrace';
@@ -129,24 +130,26 @@ export function setupVersion(folder = SOURCE) {
 }
 
 /** The VM up, with gVisor, the collector and the sandbox image as this CLI ships them. */
-function ensureVm() {
+async function ensureVm() {
   const status = vmStatus();
   if (!status) {
-    say(`Creating the RayTrace VM "${VM}" (first time only: it downloads Ubuntu, a few minutes)...`);
-    limactl(['start', '--name', VM, '--tty=false', join(SOURCE, 'lima.yaml')], { log: true });
+    await runVmStep(limactlBinary(), ['start', '--name', VM, '--tty=false', join(SOURCE, 'lima.yaml')], {
+      stage: `Creating the RayTrace VM "${VM}" and downloading Ubuntu`, logFile: VM_LOG, say,
+    });
   } else if (status !== 'Running') {
-    say(`Starting the RayTrace VM "${VM}"...`);
-    limactl(['start', '--tty=false', VM], { log: true });
+    await runVmStep(limactlBinary(), ['start', '--tty=false', VM], {
+      stage: `Resuming the RayTrace VM "${VM}"`, logFile: VM_LOG, say,
+    });
   }
   const version = setupVersion();
   const installed = inVm(['cat', SETUP_MARK], { check: false }).stdout?.trim();
-  if (installed !== version) installInVm(version);
+  if (installed !== version) await installInVm(version);
   // Through stdin: arguments are visible to every account in `ps`. Written each
   // time, so a new token or a rebuilt VM never leaves the viewer locked.
   inVm(['sh', '-c', 'umask 077; cat > /etc/raytace/viewer-token'], { input: `${viewerTokenFor(ensureToken(paths.home))}\n` });
 }
 
-function installInVm(version) {
+async function installInVm(version) {
   say(`Installing gVisor, the evidence collector and the sandbox image in the VM (a few minutes; progress in ${VM_LOG})...`);
   inVm(['rm', '-rf', '/tmp/raytrace-sandbox-source']);
   limactl(['shell', '--workdir', '/', VM, 'mkdir', '-p', '/tmp/raytrace-sandbox-source']);
@@ -154,7 +157,9 @@ function installInVm(version) {
   // Only worker/sandbox is copied, not package.json: the core learns its version from this
   // (core.version()), which names the image it builds and what `projects.py version` reports.
   inVm(['sh', '-c', 'cat > /tmp/raytrace-sandbox-source/VERSION'], { input: `${packageVersion()}\n` });
-  inVm(['python3', '/tmp/raytrace-sandbox-source/setup.py'], { log: true });
+  await runVmStep(limactlBinary(), ['shell', '--workdir', '/', VM, 'sudo', 'python3', '/tmp/raytrace-sandbox-source/setup.py'], {
+    stage: 'Installing gVisor, the evidence collector and the sandbox image', logFile: VM_LOG, say,
+  });
   inVm(['sh', '-c', `echo ${version} > ${SETUP_MARK}`]);
 }
 
@@ -222,7 +227,7 @@ export function sandboxName(flags, root) {
 }
 
 export async function create(name, { root, files, skipped, total, archive }) {
-  ensureVm();
+  await ensureVm();
   const id = `rtp-${randomBytes(16).toString('hex')}`;
   const token = randomBytes(32).toString('base64url');
   say(`Copying ${files.length} files (${(total / 1048576).toFixed(1)} MiB) from ${root} into a new sandbox`);
@@ -273,7 +278,7 @@ function startWithHook(id) {
 
 export async function start(id) {
   id = pickId(id);
-  ensureVm();
+  await ensureVm();
   startWithHook(id);
   await ensureBridge();
   say(`${registry()[id].name} running`);
@@ -321,7 +326,7 @@ export async function files(ref, change = {}) {
   const changing = ['restrict', 'report', 'clear'].some((key) => change[key]?.length);
   // Refuse a bad path before the VM is started for it.
   if (changing) changedLists({}, change);
-  ensureVm();
+  await ensureVm();
   const { name } = registry()[id];
   const read = (args, options) => JSON.parse(projects(args, options).stdout);
   let lists = read(['guardrails', id]);
@@ -391,7 +396,7 @@ export async function destroy(ref, flags, { ask, interactive }) {
       && /^y(es)?$/i.test((await ask('Also delete the logs captured in this sandbox? (yes/no) [no]: ')).trim());
   }
 
-  ensureVm();
+  await ensureVm();
   const inVmNow = JSON.parse(projects(['list']).stdout || '[]');
   const exists = inVmNow.some((item) => item.id === id);
   // Its Playground forks, which are sandboxes of their own in the VM.
@@ -445,7 +450,7 @@ export const promptsLink = (id) => `http://127.0.0.1:${portOf(readConfig())}/?bo
 
 export async function shell(id, { agent } = {}) {
   id = pickId(id);
-  ensureVm();
+  await ensureVm();
   startWithHook(id);
   await ensureBridge();
   const { name } = registry()[id];
