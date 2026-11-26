@@ -3,7 +3,6 @@
 // ~/.raytrace/star-prompt.json and is shared with the local dashboard popup.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 import { paths } from './paths.mjs';
 import { confirm as promptConfirm } from './prompt.mjs';
 import {
@@ -47,10 +46,13 @@ function suppressed(flags, env, stdout, stdin) {
 }
 
 /** Count all recorded prompt turns in the local evidence database; 0 if unavailable. */
-export function recordedPromptCount(dbFile = paths.database) {
+export async function recordedPromptCount(dbFile = paths.database) {
   if (!dbFile || !existsSync(dbFile)) return 0;
   let db;
   try {
+    // Lazy-import node:sqlite so CLI commands do not emit Node 22's
+    // ExperimentalWarning on stderr at startup.
+    const { DatabaseSync } = await import('node:sqlite');
     db = new DatabaseSync(dbFile, { readOnly: true });
     return Number(db.prepare('SELECT COUNT(*) AS n FROM agent_turns').get()?.n ?? 0);
   } catch {
@@ -96,7 +98,7 @@ export async function maybeStarPrompt(flags = {}, deps = {}) {
   if (suppressed(flags, env, stdout, stdin)) return false;
   if (readStarPromptState(home)) return false;
 
-  const prompts = deps.prompts !== undefined ? Math.max(0, Math.floor(Number(deps.prompts) || 0)) : recordedPromptCount(dbFile);
+  const prompts = deps.prompts !== undefined ? Math.max(0, Math.floor(Number(deps.prompts) || 0)) : await recordedPromptCount(dbFile);
   if (prompts < threshold) return false;
 
   // Verify the home directory is usable before prompting so we never nag on every run.

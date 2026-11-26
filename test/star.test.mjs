@@ -98,11 +98,11 @@ describe('shared star-prompt state', { concurrency: false }, () => {
     }
   });
 
-  test('turnCount and recordedPromptCount count all prompts across agents', () => {
+  test('turnCount and recordedPromptCount count all prompts across agents', async () => {
     const home = homeDir();
     const dbFile = join(home, 'evidence.db');
     try {
-      assert.equal(recordedPromptCount(dbFile), 0);
+      assert.equal(await recordedPromptCount(dbFile), 0);
       const store = openEvidenceStore(dbFile);
       try {
         assert.equal(store.turnCount(), 0);
@@ -142,7 +142,7 @@ describe('shared star-prompt state', { concurrency: false }, () => {
       } finally {
         store.close();
       }
-      assert.equal(recordedPromptCount(dbFile), 3);
+      assert.equal(await recordedPromptCount(dbFile), 3);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
