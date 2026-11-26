@@ -3,6 +3,18 @@ export const TOOL_RESULT_KINDS = ['function_call_output', 'custom_tool_call_outp
 
 const outputText = (output) => typeof output === 'string' ? output : Array.isArray(output) ? output.map(part => part?.text || '').join('\n') : '';
 
+// Unified exec returns this object directly or serializes it as the tool output.
+// Only read the outer envelope; its output field is command-owned text.
+function executionResult(output) {
+  let result = output;
+  if (typeof output === 'string') {
+    try { result = JSON.parse(output); } catch { return null; }
+  }
+  return result && typeof result === 'object' && !Array.isArray(result)
+    && typeof result.output === 'string'
+    && (Number.isInteger(result.exit_code) || Number.isInteger(result.session_id)) ? result : null;
+}
+
 /** What the runner itself reported about a finished command: exit code and
  * wall time, from its header only (never from command output). Either field
  * is null when the runner did not state it -- including a command still
@@ -10,6 +22,16 @@ const outputText = (output) => typeof output === 'string' ? output : Array.isArr
 export function toolResultFacts(item) {
   const facts = { exitCode: null, wallMs: null };
   const output = item?.output ?? item?.content;
+  const execution = executionResult(output);
+  if (execution) {
+    if (Number.isInteger(execution.exit_code)) {
+      facts.exitCode = execution.exit_code;
+      if (Number.isFinite(execution.wall_time_seconds) && execution.wall_time_seconds >= 0) {
+        facts.wallMs = Math.round(execution.wall_time_seconds * 1000);
+      }
+    }
+    return facts;
+  }
   const text = outputText(output);
   if (/^(?:Chunk ID: [\w-]+\r?\n)?Wall time:/i.test(text)) {
     const header = text.split(/^Output:\s*$/m)[0].slice(0, 1000);
@@ -44,8 +66,10 @@ export function toolResultFacts(item) {
 export function toolResultStatus(item) {
   const output = item.output ?? item.content;
   if (item.is_error === true || item.status === 'failed') return 'Failed';
-  const code = item.exit_code ?? (output && typeof output === 'object' && !Array.isArray(output) ? output.exit_code : undefined);
+  const execution = executionResult(output);
+  const code = item.exit_code ?? execution?.exit_code ?? (output && typeof output === 'object' && !Array.isArray(output) ? output.exit_code : undefined);
   if (typeof code === 'number') return code === 0 ? 'Successful' : 'Failed';
+  if (execution && Number.isInteger(execution.session_id)) return 'Still running';
   const text = outputText(output);
   // Read runner metadata only, never infer failure from file contents or logs.
   const header = text.split(/^Output:\s*$/m)[0].slice(0, 1000);
