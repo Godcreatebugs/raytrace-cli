@@ -1,3 +1,5 @@
+English | [中文](README.zh-CN.md)
+
 <p align="center">
   <a href="https://www.raytracer.si/">
     <img src="docs/images/logo-wordmark-white.svg" alt="RayTrace — Prompts, Tool calls, Sandbox evidence" width="560">
