@@ -144,3 +144,39 @@ test('causal window: a window match carries the bounds that justified it', () =>
   assert.deepEqual(matchExecutionToCall({ command: 'rm notes.md', timestamp: 3_000 }, [{ call_id: 'call_a', timestamp: 0, args: RM }]),
     { call_id: 'call_a', score: 1, basis: 'text' });
 });
+
+// Issue #152 regressions: short pipeline children must not steal multi-command calls.
+test('similarity rejects short pipeline children like tail -5 and python3 - against long proposed commands', () => {
+  const proposed = { command: 'cat slugify.py test_slugify.py requirements.txt; python -m pytest -q 2>&1 | tail -30' };
+  assert.ok(similarity('tail -5', proposed) < 0.6, `expected tail -5 below 0.6, got ${similarity('tail -5', proposed)}`);
+  assert.ok(similarity('tail -3', proposed) < 0.6, `expected tail -3 below 0.6, got ${similarity('tail -3', proposed)}`);
+  assert.ok(similarity('python3 -', proposed) < 0.6, `expected python3 - below 0.6, got ${similarity('python3 -', proposed)}`);
+  assert.ok(similarity('python3 -', { command: 'python -m pytest' }) < 0.6);
+  // Exact short commands still match at 1.0 (important for Codex where there is no RAYTRACE_CALL_ID hook).
+  assert.equal(similarity('npm test', { command: 'npm test', workdir: '/workspace/long/path' }), 1);
+  assert.equal(similarity('ls -la', { command: 'ls -la' }), 1);
+});
+
+test('similarity strips Claude shell-snapshot eval wrapper carrying RAYTRACE_CALL_ID', () => {
+  const proposed = { command: 'curl -sS https://example.com' };
+  const wrapped = "/bin/bash -c source /home/node/.claude/shell-snapshots/snap.sh && eval 'export RAYTRACE_CALL_ID=toolu_01abc\ncurl -sS https://example.com'";
+  assert.equal(similarity(wrapped, proposed), 1);
+});
+
+test('matchBatch over overlapping open windows does not let short tail children steal other calls', () => {
+  const candidates = [
+    { call_id: 'call_1', timestamp: 1_000, window_start: 1_000, window_end: null,
+      args: { command: 'cat slugify.py test_slugify.py requirements.txt; python -m pytest -q 2>&1 | tail -30' } },
+    { call_id: 'call_2', timestamp: 2_000, window_start: 2_000, window_end: null,
+      args: { command: 'pip install -q -r requirements.txt 2>&1 | tail -3; python3 -m pytest -q 2>&1 | tail -15' } },
+    { call_id: 'call_3', timestamp: 3_000, window_start: 3_000, window_end: null,
+      args: { command: 'python3 -m pip install -q -r requirements.txt 2>&1 | tail -5; python3 -m ensurepip --version' } },
+  ];
+  const execs = [
+    { id: 'exec-tail-3', command: 'tail -3', timestamp: 2_200, margin: 250 },
+    { id: 'exec-tail-5', command: 'tail -5', timestamp: 3_200, margin: 250 },
+    { id: 'exec-py', command: 'python3 -', timestamp: 1_500, margin: 250 },
+  ];
+  const results = matchBatch(execs, candidates);
+  assert.equal(results.size, 0, `expected no loose matches, got ${JSON.stringify([...results.entries()])}`);
+});

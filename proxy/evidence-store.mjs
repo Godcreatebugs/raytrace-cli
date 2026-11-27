@@ -185,7 +185,7 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
     JOIN runtime_events ev ON ev.id = a.event_id
     LEFT JOIN runtime_processes p ON p.id = ev.process_id
     WHERE a.tool_call_id = ? AND a.status = 'accepted' AND a.method != 'inherited'
-    ORDER BY a.created_at_ms LIMIT 1`);
+    ORDER BY CASE WHEN a.confidence = 'exact' OR a.method = 'marker' THEN 0 ELSE 1 END, a.created_at_ms DESC LIMIT 1`);
   const selectSnapshotPaths = q('SELECT changes_json FROM workspace_snapshots WHERE call_id = ? ORDER BY taken_at_ms DESC LIMIT 1');
 
   function indexCall(callPk) {
@@ -551,9 +551,14 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
     },
 
     /** Ties an observed process (its exec event) to the tool call it ran
-     * for. `method` is how: marker | window | text | inherited. */
+     * for. `method` is how: marker | window | text | inherited.
+     * An exact marker join supersedes any earlier weak window/text match. */
     attribute({ toolCallId, eventId, method, confidence = 'corroborated', score = null, windowStartMs = null, windowEndMs = null }) {
       if (!toolCallId || !eventId || selectAcceptedAttribution.get(toolCallId, eventId)) return false;
+      if (method === 'marker' || confidence === 'exact') {
+        q(`UPDATE runtime_attributions SET status = 'rejected'
+          WHERE tool_call_id = ? AND status = 'accepted' AND method NOT IN ('inherited', 'marker') AND confidence != 'exact'`).run(toolCallId);
+      }
       insertAttribution.run(randomUUID(), toolCallId, eventId, method, confidence,
         JSON.stringify({ method, score, window_start_ms: windowStartMs, window_end_ms: windowEndMs }), ATTRIBUTOR_VERSION, Date.now(),
         score ?? null, windowStartMs ?? null, windowEndMs ?? null);
@@ -610,14 +615,18 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
 
     /** The session's proposed calls that no process has been tied to yet,
      * each with its causal window: from the request that proposed it to the
-     * first later request in the session that carried its result back (null
-     * while none has). `call_id` is the internal tool-call id. */
+     * first later request in the session that carried its result back (or the
+     * recorded transcript tool-result timestamp, null while none has). */
     candidatesInWindow(startMs, endMs, { sessionId = null } = {}) {
       if (!sessionId) return [];
       const rows = q(`SELECT c.id, c.external_call_id, c.tool_name, c.arguments_sha, e.started_at_ms,
-          (SELECT MIN(r.started_at_ms) FROM agent_context_items ci JOIN agent_exchanges r ON r.id = ci.exchange_id
-            WHERE ci.external_call_id = c.external_call_id AND ci.kind IN (${marks(TOOL_RESULT_KINDS)})
-              AND r.session_id = e.session_id AND r.started_at_ms >= e.started_at_ms AND r.id != e.id) AS window_end
+          COALESCE(
+            (SELECT MIN(r.started_at_ms) FROM agent_context_items ci JOIN agent_exchanges r ON r.id = ci.exchange_id
+              WHERE ci.external_call_id = c.external_call_id AND ci.kind IN (${marks(TOOL_RESULT_KINDS)})
+                AND r.session_id = e.session_id AND r.started_at_ms >= e.started_at_ms AND r.id != e.id),
+            (SELECT CAST(json_extract(rp.content, '$.recorded_at_ms') AS INTEGER) FROM agent_payloads rp
+              WHERE rp.sha = c.reported_result_sha AND json_extract(rp.content, '$.recorded_at_ms') IS NOT NULL)
+          ) AS window_end
         FROM agent_tool_calls c
         JOIN agent_exchanges e ON e.id = c.exchange_id
         JOIN agent_sessions s ON s.id = e.session_id
@@ -627,6 +636,36 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
         ORDER BY e.started_at_ms, c.output_index`).all(...TOOL_RESULT_KINDS, startMs, endMs, sessionId);
       return rows.map((row) => ({ call_id: row.id, external_call_id: row.external_call_id, tool_name: row.tool_name, timestamp: row.started_at_ms,
         args: getPayload(row.arguments_sha), window_start: row.started_at_ms, window_end: row.window_end ?? null }));
+    },
+
+    /** Calls in this session eligible for an exact RAYTRACE_CALL_ID marker join:
+     * any call that does not yet have an accepted exact/marker attribution,
+     * including calls currently holding only a weak window/text attribution. */
+    markerCandidates({ sessionId = null, externalCallIds = null, sinceMs = null } = {}) {
+      if (!sessionId) return [];
+      const list = Array.isArray(externalCallIds) ? [...new Set(externalCallIds.filter((id) => typeof id === 'string' && id))] : null;
+      if (list && !list.length) return [];
+      let sql = `SELECT c.id, c.external_call_id, c.tool_name, e.started_at_ms
+        FROM agent_tool_calls c
+        JOIN agent_exchanges e ON e.id = c.exchange_id
+        JOIN agent_sessions s ON s.id = e.session_id
+        WHERE s.external_session_id = ?
+          AND NOT EXISTS (SELECT 1 FROM runtime_attributions a
+            WHERE a.tool_call_id = c.id AND a.status = 'accepted' AND (a.method = 'marker' OR a.confidence = 'exact'))`;
+      const params = [sessionId];
+      if (list) {
+        sql += ` AND c.external_call_id IN (${marks(list)})`;
+        params.push(...list);
+      }
+      if (Number.isFinite(sinceMs)) {
+        sql += ' AND e.started_at_ms >= ?';
+        params.push(Math.round(sinceMs));
+      }
+      sql += ' ORDER BY e.started_at_ms, c.output_index';
+      return q(sql).all(...params).map((row) => ({
+        call_id: row.id, external_call_id: row.external_call_id, tool_name: row.tool_name,
+        timestamp: row.started_at_ms, window_start: row.started_at_ms, window_end: null,
+      }));
     },
 
     /** A session's sandbox processes that no call accounts for, first seen at
@@ -714,7 +753,8 @@ export function openEvidenceStore(file, { readOnly = false } = {}) {
           (SELECT COUNT(*) FROM runtime_attributions d WHERE d.tool_call_id = c.id AND d.status = 'accepted' AND d.method = 'inherited') AS descendant_count
         FROM agent_tool_calls c
         LEFT JOIN runtime_attributions a ON a.id = (SELECT a2.id FROM runtime_attributions a2
-          WHERE a2.tool_call_id = c.id AND a2.status = 'accepted' AND a2.method != 'inherited' ORDER BY a2.created_at_ms LIMIT 1)
+          WHERE a2.tool_call_id = c.id AND a2.status = 'accepted' AND a2.method != 'inherited'
+          ORDER BY CASE WHEN a2.confidence = 'exact' OR a2.method = 'marker' THEN 0 ELSE 1 END, a2.created_at_ms DESC LIMIT 1)
         LEFT JOIN runtime_events ev ON ev.id = a.event_id
         LEFT JOIN runtime_processes p ON p.id = ev.process_id
         WHERE c.exchange_id IN (${marks(exchangeIds)}) ORDER BY c.exchange_id, c.output_index`).all(...exchangeIds)

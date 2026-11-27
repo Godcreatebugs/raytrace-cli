@@ -557,6 +557,12 @@ const server = createServer(async (req, res) => {
   // list keeps them.
   if (req.method === 'GET' && ['/raytace/traces', '/raytace/traces?scope=history', '/raytace/traces?scope=history&evidence=1'].includes(req.url)) {
     try {
+      if (gvisorForwarder) {
+        await Promise.race([gvisorForwarder.poll().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 400))]);
+        for (const { sessionId } of gvisorForwarder.sandboxes.values()) {
+          await attributeLateProcesses(db, sessionId).catch(() => {});
+        }
+      }
       const cached = cachedTraces(req.url);
       const headers = { ...corsHeaders, etag: cached.etag, 'cache-control': 'no-cache', 'access-control-expose-headers': 'etag' };
       if (req.headers['if-none-match'] === cached.etag) { res.writeHead(304, headers); return res.end(); }
@@ -962,6 +968,7 @@ const gvisorForwarder = process.env.RAYTACE_GVISOR_FORWARDER === '0' ? null : st
   recordCapture: row => db.recordCaptureEvent(row),
   loadCheckpoint: (container,source) => db.captureCheckpoint(container,source),
   saveProgress: row => db.saveCaptureProgress(row),
+  onPoll: ({ sessionId, counts }) => { if (counts?.unattributed) return attributeLateProcesses(db, sessionId); },
   viewerBase: EVIDENCE_VIEWER,
   fetchImpl: fromViewer,
   ingest: (events, { sessionId }) => ingestExecutions(db, events, { sessionId }),

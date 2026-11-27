@@ -57,6 +57,7 @@ export function sandboxLabel(trace: Trace, call: CallVerification, reported: Rep
   const captured = sandboxCaptured(trace);
   if (call.kind !== 'file' && call.kind !== 'agent') return captured ? LABELS.not_seen : LABELS.not_covered;
   if (!WRITERS.has(call.name)) return LABELS.in_agent;
+  if (call.file_confirmed && !call.snapshot) return LABELS.file_changed;
   if (!captured || !call.snapshot) return LABELS.not_covered;
   if (path === null) return call.snapshot.changed ? LABELS.file_changed : reported.state === 'ok' ? LABELS.no_change : LABELS.in_agent;
   if (path.startsWith('/') && path !== WORKSPACE && !path.startsWith(`${WORKSPACE}/`)) return LABELS.not_covered;

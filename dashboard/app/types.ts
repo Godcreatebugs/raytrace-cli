@@ -34,13 +34,16 @@ export type CallVerification = {
   match_score: number | null;
   /** 'window': command text matched inside the call's causal window (after
    * the proposing request started, before its result was sent back). */
-  match_basis: 'id' | 'text' | 'window' | null;
-  /** Which witness observed the execution: 'gvisor' (the sandbox's
-   * SecCheck stream) is the only one. */
+  match_basis: 'id' | 'text' | 'window' | 'tool_report' | 'file_fact' | 'snapshot' | null;
+  /** Which witness observed the execution: 'gvisor', 'file_fact', 'snapshot',
+   * or 'activity_fact'. */
   source?: string | null;
   /** True when the sandbox runtime (gVisor) saw this program start,
    * independent of anything the agent logged about itself. */
   kernel_confirmed?: boolean;
+  /** True when an in-agent file tool (Edit/Write) was confirmed by a
+   * host-observed file fact or workspace snapshot change. */
+  file_confirmed?: boolean;
   tier?: Tier | null;
   reported_check?: ReportedCheck | null;
   descendant_count?: number;

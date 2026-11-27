@@ -41,21 +41,48 @@ export async function ingestExecutions(db, events, { sessionId = null } = {}) {
   }
   const timestamps = events.map((e) => e.timestamp).filter(Number.isFinite);
   if (!sessionId || !timestamps.length) return matches;
+  // Exact marker joins bypass tight timestamp windows and can supersede weak
+  // window/text attributions; unmarked events only compete via text matching.
+  const markedEvents = events.filter((e) => Boolean(e.call_marker));
+  const unmarkedEvents = events.filter((e) => !e.call_marker);
+  const byExternalId = new Map();
+  if (markedEvents.length) {
+    const markerPool = db.markerCandidates
+      ? await db.markerCandidates({ sessionId, externalCallIds: markedEvents.map((e) => e.call_marker) })
+      : await db.candidatesInWindow(0, Number.MAX_SAFE_INTEGER, { sessionId });
+    for (const c of markerPool) byExternalId.set(c.external_call_id, c.call_id);
+  }
+  const claimedByMarker = new Set();
+  for (const event of markedEvents) {
+    const eventId = recorded.get(event.id)?.eventId;
+    const markedCall = byExternalId.get(event.call_marker);
+    if (!markedCall || !eventId) continue;
+    const method = claimedByMarker.has(markedCall) ? 'inherited' : 'marker';
+    claimedByMarker.add(markedCall);
+    await db.attribute({
+      toolCallId: markedCall, eventId, method,
+      confidence: method === 'marker' ? 'exact' : 'corroborated',
+      score: method === 'marker' ? 1 : null,
+      windowStartMs: null, windowEndMs: null,
+    });
+    matches.set(event.id, { call_id: markedCall, score: 1, basis: method === 'marker' ? 'marker' : 'inherited' });
+  }
+  if (!unmarkedEvents.length) return matches;
   // The pool reaches back as far as an open window may stay open, plus the
   // clock margin between the proxy and the sandbox.
-  const margin = Math.max(0, ...events.map((e) => e.margin).filter(Number.isFinite));
-  const candidates = await db.candidatesInWindow(Math.min(...timestamps) - OPEN_WINDOW_CAP_MS - margin, Math.max(...timestamps) + margin, { sessionId });
-  const found = matchBatch(events, candidates.filter(runsCommands));
-  const byExternalId = new Map(candidates.map((c) => [c.external_call_id, c.call_id]));
-  for (const event of events) {
+  const margin = Math.max(0, ...unmarkedEvents.map((e) => e.margin).filter(Number.isFinite));
+  const unmarkedTimes = unmarkedEvents.map((e) => e.timestamp).filter(Number.isFinite);
+  const candidates = (await db.candidatesInWindow(Math.min(...unmarkedTimes) - OPEN_WINDOW_CAP_MS - margin, Math.max(...unmarkedTimes) + margin, { sessionId }))
+    .filter((c) => !claimedByMarker.has(c.call_id));
+  const found = matchBatch(unmarkedEvents, candidates.filter(runsCommands));
+  for (const event of unmarkedEvents) {
     const eventId = recorded.get(event.id)?.eventId;
-    const markedCall = event.call_marker ? byExternalId.get(event.call_marker) : null;
-    const match = markedCall ? { call_id: markedCall, score: 1, basis: 'marker' } : found.get(event.id);
+    const match = found.get(event.id);
     if (!match || !eventId) continue; // no confident match: the process stays recorded, unattributed -- never a guess
     await db.attribute({ toolCallId: match.call_id, eventId, method: match.basis === 'id' ? 'marker' : match.basis,
       // A marker join is exact; a text match that gVisor itself observed is
       // corroborated. Recorded at capture, never promoted later.
-      confidence: markedCall ? 'exact' : 'corroborated', score: match.score,
+      confidence: 'corroborated', score: match.score,
       windowStartMs: match.window_start ?? null, windowEndMs: match.window_end ?? null });
     matches.set(event.id, match);
   }
@@ -68,16 +95,23 @@ export async function ingestExecutions(db, events, { sessionId = null } = {}) {
  * call is only recorded once the answer is complete, so the gVisor forwarder
  * has usually seen the process before the call it belongs to exists. Once
  * the call is recorded, the same rules apply as at exec time: the call id the
- * process carries (checked against this session's own calls), else a process
- * started by one already tied to a call inherits it, else the text match.
+ * process carries (checked against this session's own calls — superseding any
+ * earlier weak text match), else a process started by one already tied to a
+ * call inherits it, else the text match.
  */
 export async function attributeLateProcesses(db, sessionId, log = console.log) {
   const now = Date.now();
-  const candidates = await db.candidatesInWindow(now - 24 * 3_600_000, now + 60_000, { sessionId });
-  if (!candidates.length) return;
+  const sinceWindow = now - 24 * 3_600_000;
+  const candidates = await db.candidatesInWindow(sinceWindow, now + 60_000, { sessionId });
+  const markerPool = db.markerCandidates
+    ? await db.markerCandidates({ sessionId, sinceMs: sinceWindow })
+    : candidates;
+  if (!candidates.length && !markerPool.length) return 0;
   const margin = 2_000;
-  const processes = await db.unattributedProcesses({ sessionId, sinceMs: Math.min(...candidates.map((c) => c.window_start)) - margin });
-  const byExternalId = new Map(candidates.map((c) => [c.external_call_id, c]));
+  const earliest = Math.min(...[...candidates, ...markerPool].map((c) => c.window_start).filter(Number.isFinite));
+  if (!Number.isFinite(earliest)) return 0;
+  const processes = await db.unattributedProcesses({ sessionId, sinceMs: earliest - margin });
+  const byExternalId = new Map(markerPool.map((c) => [c.external_call_id, c]));
   const claimed = new Set();
   const callOfProcess = new Map(); // process id -> call id, for children within this pass
   const unmatched = [];
@@ -96,7 +130,11 @@ export async function attributeLateProcesses(db, sessionId, log = console.log) {
       await db.attribute({ toolCallId: call, eventId: proc.event_id, method, confidence: method === 'marker' ? 'exact' : 'corroborated', score: method === 'marker' ? 1 : null });
       callOfProcess.set(proc.process_id, call);
       tied += 1;
-    } else if (command && Number.isFinite(proc.first_seen_ms)) unmatched.push({ id: proc.event_id, command, timestamp: proc.first_seen_ms, margin, process_id: proc.process_id });
+    } else if (!marker && command && Number.isFinite(proc.first_seen_ms)) {
+      // Never text-match a process carrying an unresolved RAYTRACE_CALL_ID:
+      // its own call has not been ingested yet, so leave it unattributed.
+      unmatched.push({ id: proc.event_id, command, timestamp: proc.first_seen_ms, margin, process_id: proc.process_id });
+    }
   }
   const found = matchBatch(unmatched, candidates.filter((c) => !claimed.has(c.call_id) && runsCommands(c)));
   for (const exec of unmatched) {
@@ -107,4 +145,5 @@ export async function attributeLateProcesses(db, sessionId, log = console.log) {
     tied += 1;
   }
   if (tied) log(`[raytace][claude-code] ${sessionId.slice(0, 12)}: tied ${tied} sandbox process(es) to calls recorded after they ran`);
+  return tied;
 }
