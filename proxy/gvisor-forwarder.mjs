@@ -68,7 +68,7 @@ export function msFromNs(ns) {
 
 /** The call id a command's own text exports, or null. */
 export function commandMarker(command) {
-  return /(?:^|[\s;'])export RAYTRACE_CALL_ID=([A-Za-z0-9_-]{1,128})(?=[\s;]|$)/.exec(String(command ?? ''))?.[1] ?? null;
+  return /(?:^|[\s;'"])export RAYTRACE_CALL_ID=([A-Za-z0-9_-]{1,128})(?=[\s;'"]|$)/.exec(String(command ?? ''))?.[1] ?? null;
 }
 
 /** One collector `exec_succeeded` event -> the shape matchBatch() consumes,
@@ -326,6 +326,7 @@ export function startGvisorForwarder({
   recordCapture,
   loadCheckpoint = async () => 0,
   saveProgress = async () => {},
+  onPoll = null,
   log = (message) => console.error(message),
   fetchImpl = globalThis.fetch,
   viewerHeaders = () => ({}),
@@ -477,6 +478,7 @@ export function startGvisorForwarder({
           log(`[raytace][gvisor] ${sessionId.slice(0, 12)}: ${counts.matched} exec(s) matched to proposed calls, `
             + `${counts.descendants} descendant(s), ${counts.unattributed} unattributed, ${counts.failedExecs} failed exec(s), `
             + `${counts.finished} closed out, ${counts.lost} marked unknown, ${counts.forwarded} top-level exec(s) considered`);
+          if (typeof onPoll === 'function') await onPoll({ sessionId, containerId, counts });
         }
       } catch (error) {
         log(`[raytace][gvisor] ${sessionId.slice(0, 12)}: failed to record evidence: ${error.message}`);

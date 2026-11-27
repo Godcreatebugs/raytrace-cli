@@ -209,48 +209,151 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
         started_at: row.started_at ?? null, ended_at: row.ended_at ?? null,
       });
     }
+    // Where a sandboxed Claude Code's project folder stood after each call,
+    // and any host-observed activity facts (file, network, dns) stamped with call_id.
+    const allCallIds = traceOrigins.map((origin) => origin.call_id);
+    const sessionScope = { sessionId: trace.sandboxId || trace.id };
+    const snapshots = await db.snapshotsForCalls(allCallIds, sessionScope);
+    const activityFacts = db?.activityFactsForCalls ? await db.activityFactsForCalls(allCallIds, sessionScope) : new Map();
+    const FILE_WRITERS = /^(?:Write|Edit|MultiEdit|NotebookEdit|apply_patch)$/i;
+    const factVerification = (origin, real) => {
+      if (real && real.outcome !== 'not_executed') {
+        return {
+          outcome: real.outcome,
+          verified: true,
+          status: real.status ?? null,
+          error: real.error ?? null,
+          match_score: real.match_score ?? null,
+          match_basis: real.match_basis ?? null,
+          source: real.source ?? null,
+          kernel_confirmed: real.kernel_confirmed === 1,
+          file_confirmed: false,
+          tier: real.tier ?? null,
+        };
+      }
+      const facts = activityFacts.get(origin.call_id) ?? [];
+      const fileFacts = facts.filter((fact) => fact.kind === 'file');
+      const snapshot = snapshots.get(origin.call_id) ?? null;
+      if (origin.kind === 'file') {
+        if (fileFacts.length > 0) {
+          const fromReport = fileFacts.some((fact) => fact.call_from === 'tool_report');
+          return {
+            outcome: 'file_observed',
+            verified: true,
+            status: 'completed',
+            error: null,
+            match_score: 1,
+            match_basis: fromReport ? 'tool_report' : 'file_fact',
+            source: 'file_fact',
+            kernel_confirmed: false,
+            file_confirmed: true,
+            tier: 'corroborated',
+          };
+        }
+        if (snapshot?.changed === true) {
+          return {
+            outcome: 'file_observed',
+            verified: true,
+            status: 'completed',
+            error: null,
+            match_score: 1,
+            match_basis: 'snapshot',
+            source: 'snapshot',
+            kernel_confirmed: false,
+            file_confirmed: true,
+            tier: 'corroborated',
+          };
+        }
+        if (!FILE_WRITERS.test(origin.name || '')) {
+          // Read-only file tools (Read, Grep, Glob, LS) run inside the agent
+          // process and start no program; never flag them as a missing command.
+          return {
+            outcome: 'in_agent',
+            verified: false,
+            status: 'in_agent',
+            error: null,
+            match_score: null,
+            match_basis: null,
+            source: null,
+            kernel_confirmed: false,
+            file_confirmed: false,
+            tier: null,
+          };
+        }
+      } else if (facts.length > 0) {
+        // Activity already carries this call_id (e.g. network/dns/file fact),
+        // so the call definitely ran even if the process row has not joined yet.
+        return {
+          outcome: 'join_pending',
+          verified: true,
+          status: 'join_pending',
+          error: null,
+          match_score: 1,
+          match_basis: 'id',
+          source: 'activity_fact',
+          kernel_confirmed: false,
+          file_confirmed: fileFacts.length > 0,
+          tier: 'corroborated',
+        };
+      }
+      return {
+        outcome: real?.outcome ?? 'not_executed',
+        verified: false,
+        status: real?.status ?? null,
+        error: real?.error ?? null,
+        match_score: real?.match_score ?? null,
+        match_basis: real?.match_basis ?? null,
+        source: real?.source ?? null,
+        kernel_confirmed: false,
+        file_confirmed: false,
+        tier: real?.tier ?? null,
+      };
+    };
+
+    const originByCallId = new Map(traceOrigins.map((origin) => [origin.call_id, origin]));
     trace.evidence = trace.evidence.map((item) => {
       const real = item.call_id ? byCallId.get(item.call_id) : null;
-      if (!real) return item;
-      // 'not_executed' means no execution row was correlated — this could be
-      // a call that genuinely never ran, or one the (deliberately
-      // conservative) matcher failed to correlate. Either way, there is no
-      // real ground truth to show yet, so this stays "unverified" and keeps
-      // the regex-heuristic succeeded value rather than asserting a fact we
-      // don't actually have.
-      const verified = real.outcome !== 'not_executed';
-      return {
-        ...item,
-        real_outcome: real.outcome,
-        real_status: real.status ?? null,
-        real_error: real.error ?? null,
+      const origin = item.call_id ? originByCallId.get(item.call_id) : null;
+      if (!real && !origin) return item;
+      const resolved = origin ? factVerification(origin, real) : {
+        outcome: real.outcome,
+        verified: real.outcome !== 'not_executed',
+        status: real.status ?? null,
+        error: real.error ?? null,
         match_score: real.match_score ?? null,
         match_basis: real.match_basis ?? null,
-        // Which witness observed it (only 'gvisor' now), and whether the
-        // runtime layer saw it start. Both drive the badge.
         source: real.source ?? null,
         kernel_confirmed: real.kernel_confirmed === 1,
-        // How this call's execution was attributed, recorded at capture (see
-        // migration 005). The UI badges this directly instead of re-deriving
-        // confidence from kernel_confirmed + match_basis, which is how a
-        // text-similarity guess ended up wearing the same badge as an exact
-        // join. Null for rows written before 005.
+        file_confirmed: false,
         tier: real.tier ?? null,
+      };
+      return {
+        ...item,
+        real_outcome: resolved.outcome,
+        real_status: resolved.status,
+        real_error: resolved.error,
+        match_score: resolved.match_score,
+        match_basis: resolved.match_basis,
+        // Which witness observed it (gvisor, file_fact, snapshot, activity_fact),
+        // and whether the runtime layer saw a program start.
+        source: resolved.source,
+        kernel_confirmed: resolved.kernel_confirmed,
+        file_confirmed: resolved.file_confirmed,
+        tier: resolved.tier,
         // The call's own process, so the decision chain can say which pid
         // this call ran as and jump to it in the sandbox tree.
         ...executionFields(real),
         descendants: descendantsByCall.get(item.call_id) ?? [],
-        descendant_count: real.descendant_count ?? 0,
-        verified,
+        descendant_count: real?.descendant_count ?? 0,
+        verified: resolved.verified,
         // Whether the agent's own report of the result (exit code, wall
         // time) agrees with what the runtime observed. See migration 007.
-        reported_check: real.reported_check ?? null,
+        reported_check: real?.reported_check ?? null,
         // Real ground truth overrides the text-scanning heuristic once we
-        // have it -- except while a sandbox command is still 'running'
-        // (gVisor has seen it start but not exit yet) or its outcome is
-        // 'unknown' (the evidence that would say was lost): asserting success
-        // or failure there would be a fact we don't have, so keep the heuristic.
-        succeeded: verified && real.status !== 'running' && real.status !== 'unknown' ? real.status === 'completed' : item.succeeded,
+        // have it -- except while a sandbox command is still 'running' /
+        // 'join_pending' / 'in_agent' or its outcome is 'unknown'.
+        succeeded: resolved.verified && resolved.kernel_confirmed && resolved.status !== 'running' && resolved.status !== 'unknown'
+          ? resolved.status === 'completed' : item.succeeded,
       };
     });
 
@@ -258,13 +361,9 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
     // above, this isn't limited to calls whose result got resent as later
     // input — it covers every call this trace ever proposed, including one
     // in the very last response with no later request to resend it into.
-    // `origins` already has one entry per call_id with the exchange that
-    // proposed it, so this is just that, decorated with whatever real
-    // execution data (if any) `divergence()` found for the same call_id.
-    // Where a sandboxed Claude Code's project folder stood after each call.
-    const snapshots = await db.snapshotsForCalls(traceOrigins.map((origin) => origin.call_id), { sessionId: trace.sandboxId || trace.id });
     trace.callVerifications = traceOrigins.map((origin) => {
       const real = byCallId.get(origin.call_id);
+      const resolved = factVerification(origin, real);
       return {
         call_id: origin.call_id,
         exchange_id: origin.exchange_id,
@@ -273,14 +372,15 @@ export async function readTraces(db, { includeHistory = false, evidence = true, 
         category: origin.category.category,
         category_source: origin.category.source,
         ...(origin.category.command ? { category_command: origin.category.command } : {}),
-        verified: real ? real.outcome !== 'not_executed' : false,
-        status: real?.status ?? null,
-        error: real?.error ?? null,
-        match_score: real?.match_score ?? null,
-        match_basis: real?.match_basis ?? null,
-        source: real?.source ?? null,
-        kernel_confirmed: real?.kernel_confirmed === 1,
-        tier: real?.tier ?? null,
+        verified: resolved.verified,
+        status: resolved.status,
+        error: resolved.error,
+        match_score: resolved.match_score,
+        match_basis: resolved.match_basis,
+        source: resolved.source,
+        kernel_confirmed: resolved.kernel_confirmed,
+        file_confirmed: resolved.file_confirmed,
+        tier: resolved.tier,
         reported_check: real?.reported_check ?? null,
         descendant_count: real?.descendant_count ?? 0,
         // Everything the "proposed vs observed" table needs for this row:

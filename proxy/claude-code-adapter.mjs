@@ -141,13 +141,15 @@ export function toolResultsFromTranscript(lines) {
   const results = new Map();
   for (const line of lines) {
     if (line?.type === 'user' && Array.isArray(line.message?.content)) {
+      const recordedAtMs = toMs(line.timestamp);
       for (const part of line.message.content) {
         if (part?.type === 'tool_result' && part.tool_use_id) {
           results.set(part.tool_use_id, {
             type: 'function_call_output',
             call_id: part.tool_use_id,
             output: toolOutput(part.content),
-            ...(part.is_error ? { is_error: true } : {})
+            ...(part.is_error ? { is_error: true } : {}),
+            ...(recordedAtMs != null ? { recorded_at_ms: recordedAtMs } : {})
           });
         }
       }

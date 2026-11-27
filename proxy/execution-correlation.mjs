@@ -54,22 +54,57 @@ function longestCommonSubstringLength(a, b) {
 // (e.g. "/bin/zsh -lc <what the model actually asked for>") — that wrapper
 // text never appears in the model's proposed arguments, so it must be
 // stripped before comparing, or it dilutes even an exact match's score.
+// Claude Code additionally wraps Bash calls in a shell snapshot + eval carrying
+// `export RAYTRACE_CALL_ID=<id>\n<actual command>`.
 const SHELL_WRAPPER_PREFIX = /^\/bin\/(?:zsh|bash|sh)\s+-[a-z]+\s+/i;
+const HOOK_EXPORT_PREFIX = /^export\s+raytrace_call_id=[a-z0-9_-]{1,128}[\s;]+/i;
+const CLAUDE_EVAL_MARKER = /\beval\s+(['"])export\s+raytrace_call_id=[a-z0-9_-]{1,128}[\r\n;]+([\s\S]*?)\1/i;
 
-/** Similarity in [0, 1], normalized against the EXECUTED command's own
- * length (after stripping Codex's shell wrapper) rather than whichever side
- * happens to be shorter. This is intentionally asymmetric: the model's
- * proposed arguments may legitimately carry extra fields (a working
- * directory, a timeout, a justification string) that have nothing to do
- * with the command text itself and should not be allowed to drag the score
- * down just because they make the candidate's flattened text longer. 1.0
- * means the full executed command text appears verbatim inside whatever the
- * model proposed. */
+// Common short pipeline/utility children (e.g. `tail -5`, `grep foo`, `wc -l`).
+// When the proposed command is longer than the executed child, these must not
+// steal a multi-step command just because their tiny text appears inside it.
+const UTILITY_CHILD = /^(?:tail|head|grep|egrep|fgrep|rg|awk|sed|wc|cat|pwd|true|false|echo|sleep|tr|cut|sort|uniq|tee|xargs|basename|dirname)\b/i;
+const SHORT_EXECUTED_LEN = 20;
+const TINY_EXECUTED_LEN = 12;
+
+function stripCommandWrapper(executedCommand) {
+  let command = String(executedCommand ?? '').toLowerCase().trim();
+  const evalMatch = CLAUDE_EVAL_MARKER.exec(command);
+  if (evalMatch) return evalMatch[2].trim();
+  command = command.replace(SHELL_WRAPPER_PREFIX, '').trim();
+  command = command.replace(HOOK_EXPORT_PREFIX, '').trim();
+  return command;
+}
+
+function proposedCommandText(candidateArgs) {
+  if (candidateArgs == null) return '';
+  if (typeof candidateArgs === 'string') return candidateArgs.toLowerCase().trim();
+  if (typeof candidateArgs === 'object' && !Array.isArray(candidateArgs)) {
+    if (candidateArgs.command != null) return flattenText(candidateArgs.command).trim();
+    if (candidateArgs.cmd != null) return flattenText(candidateArgs.cmd).trim();
+  }
+  return flattenText(candidateArgs).trim();
+}
+
+/** Similarity in [0, 1]. For substantial commands we normalize against the
+ * executed command's own length (so extra metadata fields in candidate args do
+ * not drag down a match). For short commands (< 20 chars) or common pipeline
+ * utilities that are shorter than the proposed command, we normalize against
+ * max(executed, proposed command) so a pipeline child like `tail -5` or
+ * `python3 -` cannot steal a much longer proposed command. */
 export function similarity(executedCommand, candidateArgs) {
-  const command = String(executedCommand ?? '').toLowerCase().replace(SHELL_WRAPPER_PREFIX, '');
+  const command = stripCommandWrapper(executedCommand);
   const candidateText = flattenText(candidateArgs);
   if (!command || !candidateText) return 0;
-  return longestCommonSubstringLength(command, candidateText) / command.length;
+  const proposed = proposedCommandText(candidateArgs) || candidateText;
+  const lcs = longestCommonSubstringLength(command, candidateText);
+  if (command.length < TINY_EXECUTED_LEN && lcs < command.length) {
+    return lcs / (command.length + proposed.length);
+  }
+  if (command.length < SHORT_EXECUTED_LEN || (UTILITY_CHILD.test(command) && proposed.length > command.length)) {
+    return lcs / Math.max(command.length, proposed.length);
+  }
+  return lcs / command.length;
 }
 
 const MATCH_THRESHOLD = 0.6; // below this, treat as "no confident match"
