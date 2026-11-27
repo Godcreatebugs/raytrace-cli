@@ -11,7 +11,7 @@ import { api } from './api';
 
 export const STAR_POPUP_DELAY_MS = 20_000;
 const DEFAULT_STAR_URL = 'https://github.com/Godcreatebugs/raytrace-cli';
-const DEFAULT_WEBSITE_URL = 'https://raytracer.si';
+const DEFAULT_WEBSITE_URL = 'https://raytracer.si/sign-in.html?src=star-thanks';
 
 export type StarPromptAction = 'opened' | 'already_starred' | 'dismissed';
 export type StarPromptSource = 'dashboard' | 'sidebar';
@@ -127,7 +127,7 @@ export function StarPopup({ promptCount, connected, suppressed = false }: {
         </p>
         <div className="rt-star-popup-actions">
           <a className="rt-button primary rt-star-popup-cta" href={websiteUrl} target="_blank" rel="noopener noreferrer" onClick={() => setStage('hidden')}>
-            <span>Visit raytracer.si</span>
+            <span>Create free account</span>
             <ExternalLink size={13} aria-hidden="true" />
           </a>
           <button type="button" className="rt-star-popup-secondary" onClick={() => setStage('hidden')}>

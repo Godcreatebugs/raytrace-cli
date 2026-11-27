@@ -37,6 +37,7 @@ import { api } from './api';
 import { ConnectionStatus, GitHubStarLink, ThemeButton, WaveAnimationButton } from './motion/controls';
 import { LoadingState } from './loading-state';
 import { StarPopup, recordStarPromptAction } from './star-popup';
+import { SignupPopup } from './signup-popup';
 
 export type View = 'prompts' | 'search' | 'story' | 'sandboxes' | 'scan' | 'calls' | 'changes' | 'sandbox' | 'context' | 'thought' | 'playground';
 type Place = { view: View; trace: string; call: string | null; step: string | null; box: string; q: string };
@@ -228,5 +229,6 @@ export function Dashboard({ views = VIEWS, offline = 'PROXY OFFLINE', footer = n
     {place.view === 'thought' && shows('thought') && (trace ? <ChainOfThoughtView key={trace.id} trace={trace} focusCall={place.call} /> : noPrompt())}
 
     <StarPopup promptCount={traces.filter((item) => !item.forkId).length} connected={connected} suppressed={starHandled} />
+    <SignupPopup promptCount={traces.filter((item) => !item.forkId).length} connected={connected} />
   </main>;
 }

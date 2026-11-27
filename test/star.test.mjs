@@ -58,7 +58,7 @@ describe('shared star-prompt state', { concurrency: false }, () => {
   test('threshold is 3 prompts and URLs point to the CLI repo and website', () => {
     assert.equal(STAR_PROMPT_THRESHOLD, 3);
     assert.equal(STAR_URL, 'https://github.com/Godcreatebugs/raytrace-cli');
-    assert.equal(WEBSITE_URL, 'https://raytracer.si');
+    assert.equal(WEBSITE_URL, 'https://raytracer.si/sign-in.html?src=star-thanks');
   });
 
   test('starPromptStatus becomes eligible at 3 prompts and stops after any recorded action', () => {

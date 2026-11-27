@@ -17,10 +17,22 @@ export const CLIENT_ID = process.env.RAYTRACE_WORKOS_CLIENT_ID || 'client_01M4BC
 const SERVICE = 'raytrace-cli';
 const ACCOUNT = 'raytrace';
 const FILE = join(paths.home, 'credentials.json');
+const ACCOUNT_LINKED = () => join(paths.home, 'account-linked');
+
+function markAccountLinked() {
+  const file = ACCOUNT_LINKED();
+  if (existsSync(file)) return;
+  try {
+    mkdirSync(paths.home, { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ linked: true, at: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(file, 0o600);
+  } catch { /* non-fatal: local proxy only reads this as a hint */ }
+}
 
 // ------------------------------------------------------------- storage
 
 function save(session) {
+  markAccountLinked();
   const value = Buffer.from(JSON.stringify(session)).toString('base64');
   if (process.platform === 'darwin') {
     // `security -i` reads its command from stdin, so the token never shows in a process list.
@@ -47,7 +59,11 @@ function load() {
   }
   if (!value && existsSync(FILE)) value = readFileSync(FILE, 'utf8').trim();
   if (!value) return null;
-  try { return JSON.parse(Buffer.from(value, 'base64').toString('utf8')); } catch { return null; }
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+    if (parsed?.access_token) markAccountLinked();
+    return parsed;
+  } catch { return null; }
 }
 
 function forget() {
