@@ -435,5 +435,116 @@ class EveryProjectFile(unittest.TestCase):
         self.assertEqual((fact['call_id'], fact['basis']['via']), ('call_10', 'src/hard.js'))
 
 
+class PackageLedger(unittest.TestCase):
+    """Issue #153: packages ledger catches get-pip, python -m pip, custom
+    workspace venvs from argv, and container-ephemeral venvs like /tmp/venv."""
+    def setUp(self):
+        self.now = 2000.0
+        self.engine = engine.Engine(':memory:', arch='aarch64', watch=False, clock=lambda: self.now)
+        self.workspace = tempfile.TemporaryDirectory()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.workspace.cleanup)
+        self.addCleanup(self.home.cleanup)
+        self.box = engine.Sandbox('c' * 64)
+        self.box.workspace = self.workspace.name
+        self.box.home = self.home.name
+        self.box.packages = {}
+
+    def _make_dist_info(self, root, rel_site, name, version):
+        dist = Path(root) / rel_site / f'{name}-{version}.dist-info'
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / 'METADATA').write_text(f'Name: {name}\nVersion: {version}\n')
+
+    def test_is_package_manager_recognizes_pip_get_pip_and_extra_flags(self):
+        self.assertTrue(engine.is_package_manager(['python3', '-I', '/tmp/getpip/get-pip.py', '-q']))
+        self.assertTrue(engine.is_package_manager(['/tmp/venv/bin/python', '-m', 'pip', 'install', 'pytest']))
+        self.assertTrue(engine.is_package_manager(['/tmp/venv/bin/python', '-I', '-u', '-X', 'utf8', '-m', 'pip', 'install', 'pytest']))
+        self.assertTrue(engine.is_package_manager(['/tmp/venv/bin/pip3.11', 'install', 'pytest']))
+        self.assertTrue(engine.is_package_manager(['python3', '-m', 'ensurepip']))
+        self.assertFalse(engine.is_package_manager(['python3', 'app.py']))
+        self.assertEqual(engine.package_prefixes(['/tmp/venv/bin/python', '-m', 'pip', 'install', 'pytest']), ['/tmp/venv'])
+        self.assertEqual(engine.package_prefixes(['python3', '-m', 'pip', 'install', '--target', '/workspace/vendor', 'pytest']), ['/workspace/vendor'])
+
+    def test_workspace_venv_install_still_detected(self):
+        self._make_dist_info(self.workspace.name, '.venv/lib/python3.11/site-packages', 'tabulate', '0.10.0')
+        self.box.processes[50] = {'start_ns': '50', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/workspace/.venv/bin/python', '-m', 'pip', 'install', '-q', 'tabulate'],
+                                  'call_id': 'call_ws'}
+        self.engine.exited(self.box, {'pid': 50, 'process_start_ns': '50'})
+        self.assertIsNotNone(self.box.package_due)
+        self.engine.packages(self.box)
+        facts = [f for f in self.engine.facts.values() if f['kind'] == 'package']
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]['call_id'], 'call_ws')
+        self.assertEqual(facts[0]['packages'], [{'name': 'tabulate', 'version': '0.10.0'}])
+
+    def test_custom_venv_prefix_from_argv_is_scanned(self):
+        self._make_dist_info(self.workspace.name, 'custom-env/lib/python3.11/site-packages', 'requests', '2.32.0')
+        # Without the argv prefix, installed() wouldn't scan /workspace/custom-env.
+        self.assertEqual(engine.installed(self.workspace.name, self.home.name), {})
+        self.assertIn(('pip', 'requests', '2.32.0'),
+                      engine.installed(self.workspace.name, self.home.name, extra_prefixes=['/workspace/custom-env']))
+        self.box.processes[51] = {'start_ns': '51', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/workspace/custom-env/bin/python', '-m', 'pip', 'install', 'requests'],
+                                  'call_id': 'call_custom'}
+        self.engine.exited(self.box, {'pid': 51, 'process_start_ns': '51'})
+        self.assertIn('/workspace/custom-env', self.box.package_prefixes)
+        self.engine.packages(self.box)
+        facts = [f for f in self.engine.facts.values() if f['kind'] == 'package']
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]['packages'], [{'name': 'requests', 'version': '2.32.0'}])
+
+    def test_tmp_venv_install_observed_from_dist_info_opens(self):
+        # /tmp/venv is inside the container's ephemeral fs (not bind-mounted on the host).
+        # Observing writes to *.dist-info/METADATA catches both get-pip and pip install there.
+        self.box.processes[60] = {'start_ns': '60', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/tmp/venv/bin/python', '-I', '/tmp/getpip/get-pip.py', '-q'],
+                                  'call_id': 'call_getpip'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/tmp/venv/lib/python3.11/site-packages/pip-26.3.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 60, 'ppid': 1,
+                                      'process_start_ns': '60', 'timestamp_ns': '1000', 'sysno': 56})
+        self.engine.exited(self.box, {'pid': 60, 'process_start_ns': '60'})
+        self.assertIsNotNone(self.box.package_due)
+        self.engine.packages(self.box)
+
+        self.box.processes[61] = {'start_ns': '61', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/tmp/venv/bin/python', '-m', 'pip', 'install', 'pytest'],
+                                  'call_id': 'call_pytest'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/tmp/venv/lib/python3.11/site-packages/pytest-9.2.0.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 61, 'ppid': 1,
+                                      'process_start_ns': '61', 'timestamp_ns': '2000', 'sysno': 56})
+        self.engine.exited(self.box, {'pid': 61, 'process_start_ns': '61'})
+        self.engine.packages(self.box)
+
+        self.box.processes[62] = {'start_ns': '62', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/tmp/venv2/bin/python', '-m', 'pip', 'install', '-q', 'markdown'],
+                                  'call_id': 'call_md'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/tmp/venv2/lib/python3.11/site-packages/markdown-3.11.4.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 62, 'ppid': 1,
+                                      'process_start_ns': '62', 'timestamp_ns': '3000', 'sysno': 56})
+        self.engine.exited(self.box, {'pid': 62, 'process_start_ns': '62'})
+        self.engine.packages(self.box)
+
+        by_call = {f['call_id']: f['packages'] for f in self.engine.facts.values() if f['kind'] == 'package'}
+        self.assertEqual(by_call['call_getpip'], [{'name': 'pip', 'version': '26.3'}])
+        self.assertEqual(by_call['call_pytest'], [{'name': 'pytest', 'version': '9.2.0'}])
+        self.assertEqual(by_call['call_md'], [{'name': 'markdown', 'version': '3.11.4'}])
+
+    def test_workspace_and_open_observation_deduplicate_same_package(self):
+        self._make_dist_info(self.workspace.name, '.venv/lib/python3.11/site-packages', 'tabulate', '0.10.0')
+        self.box.processes[70] = {'start_ns': '70', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/workspace/.venv/bin/python', '-m', 'pip', 'install', 'tabulate'],
+                                  'call_id': 'call_dedup'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/workspace/.venv/lib/python3.11/site-packages/tabulate-0.10.0.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 70, 'ppid': 1,
+                                      'process_start_ns': '70', 'timestamp_ns': '4000', 'sysno': 56})
+        self.engine.exited(self.box, {'pid': 70, 'process_start_ns': '70'})
+        self.engine.packages(self.box)
+        facts = [f for f in self.engine.facts.values() if f['kind'] == 'package']
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]['total'], 1)
+        self.assertEqual(facts[0]['packages'], [{'name': 'tabulate', 'version': '0.10.0'}])
+
+
 if __name__ == '__main__':
     unittest.main()

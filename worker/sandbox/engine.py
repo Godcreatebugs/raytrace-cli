@@ -117,6 +117,11 @@ ALIAS_WINDOW = 5_000_000_000    # ns before a change within which an open of ano
 # naming a folder (a script given its working folder) says nothing of them.
 FOLDER_TOOLS = frozenset(['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'chgrp', 'find', 'rsync', 'shred', 'unlink', 'truncate'])
 PACKAGE_TOOLS = frozenset(['npm', 'npx', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'uv', 'poetry'])
+PIP_BIN = re.compile(r'^pip(?:\d+(?:\.\d+)*)?$')
+PYTHON_BIN = re.compile(r'^python(?:\d+(?:\.\d+)*)?$')
+VENV_BIN_PREFIX = re.compile(r'^(.+)/bin/(?:python(?:\d+(?:\.\d+)*)?|pip(?:\d+(?:\.\d+)*)?)$')
+SYSTEM_PREFIXES = frozenset(['', '/', '/usr', '/usr/local'])
+DIST_INFO_FILES = frozenset(['METADATA', 'RECORD', 'WHEEL', 'INSTALLER'])
 REGISTRIES = frozenset(['registry.npmjs.org', 'registry.yarnpkg.com', 'pypi.org', 'files.pythonhosted.org'])
 MAX_PACKAGES = 400
 REJECTED = [ipaddress.ip_network(block) for block in network.REJECTED]
@@ -239,10 +244,8 @@ def change(before, after, events, flags):
     return 'changed'
 
 
-def project_path(event):
-    """The project file an open names, relative to the project, or None when
-    it is outside it. Worked out from the text of the path: links inside the
-    project are not followed, which a fact says as `resolution: lexical`."""
+def observed_path(event):
+    """Normalized absolute path inside the container an open names, or None."""
     name = event.get('pathname') or ''
     if not name:
         return None
@@ -251,46 +254,154 @@ def project_path(event):
         if not base or not base.startswith('/'):
             return None
         name = base + '/' + name
-    name = posixpath.normpath(name)
-    return name[len(WORKSPACE):] if name.startswith(WORKSPACE) else None
+    return posixpath.normpath(name)
 
 
-def installed(workspace, home):
-    """{(manager, name, version): where it came from} as the package managers'
-    own records on the volume have it. The agent can write those files, so a
-    fact drawn from them is `reported`, not seen."""
-    found = {}
-    roots = [''] + [name for name in names_inside(workspace, '') if name not in SKIPPED and not name.startswith('.')][:50]
-    for root in roots:
-        modules = posixpath.join(root, 'node_modules')
-        lock = read_inside(workspace, posixpath.join(modules, '.package-lock.json'), 32 * 1024 * 1024)
-        try:
-            listed = json.loads(lock)['packages'] if lock else None
-        except (ValueError, KeyError, TypeError):
-            listed = None
-        if isinstance(listed, dict):
-            for key, entry in listed.items():
-                if isinstance(key, str) and isinstance(entry, dict) and isinstance(entry.get('version'), str):
-                    found[('npm', key.rsplit('node_modules/', 1)[-1][:200], entry['version'][:80])] = str(entry.get('resolved') or '')[:300] or None
+def project_path(event):
+    """The project file an open names, relative to the project, or None when
+    it is outside it. Worked out from the text of the path: links inside the
+    project are not followed, which a fact says as `resolution: lexical`."""
+    name = observed_path(event)
+    return name[len(WORKSPACE):] if name and name.startswith(WORKSPACE) else None
+
+
+def dist_info_from_path(path):
+    """If `path` is a Python package metadata file inside a `*.dist-info`
+    folder anywhere in the container (including `/tmp/venv`), return
+    `('pip', package, version)`; else None."""
+    if not path:
+        return None
+    folder, leaf = posixpath.split(path)
+    if leaf not in DIST_INFO_FILES:
+        return None
+    dist = posixpath.basename(folder)
+    if not dist.endswith('.dist-info') or '-' not in dist:
+        return None
+    package, _, version = dist[:-len('.dist-info')].rpartition('-')
+    if not package or not version or package.startswith('.'):
+        return None
+    return ('pip', package[:200], version[:80])
+
+
+def is_package_manager(argv):
+    """Whether `argv` is a package-manager invocation (npm/pip/uv/poetry,
+    `python ... -m pip`, `python ... -m ensurepip`, `*/bin/pip*`, or `get-pip.py`)."""
+    if not argv:
+        return False
+    bases = [posixpath.basename(part) for part in argv if isinstance(part, str) and part]
+    if not bases:
+        return False
+    if PACKAGE_TOOLS.intersection(bases[:4]):
+        return True
+    if any(PIP_BIN.match(base) or base == 'get-pip.py' for base in bases):
+        return True
+    if PYTHON_BIN.match(bases[0]):
+        for index, part in enumerate(argv[1:], start=1):
+            if part == '-m' and index + 1 < len(argv) and argv[index + 1] in ('pip', 'ensurepip'):
+                return True
+            if isinstance(part, str) and part in ('-mpip', '-mensurepip'):
+                return True
+    return False
+
+
+def package_prefixes(argv):
+    """Container venv/target prefixes named in `argv` (e.g. `/tmp/venv` from
+    `/tmp/venv/bin/python`, or `--prefix` / `--target` / `-t`)."""
+    if not argv:
+        return []
+    found = []
+    first = posixpath.normpath(argv[0]) if isinstance(argv[0], str) and argv[0].startswith('/') else ''
+    match = VENV_BIN_PREFIX.match(first)
+    if match and match.group(1) not in SYSTEM_PREFIXES:
+        found.append(match.group(1))
+    for index, part in enumerate(argv[1:], start=1):
+        if not isinstance(part, str):
             continue
-        # No npm record (yarn, pnpm, bun): the packages at the top of node_modules.
-        for name in names_inside(workspace, modules)[:1000]:
-            for package in ([posixpath.join(name, inner) for inner in names_inside(workspace, posixpath.join(modules, name))[:200]]
-                            if name.startswith('@') else [name]):
-                text = read_inside(workspace, posixpath.join(modules, package, 'package.json'), 1024 * 1024)
-                try:
-                    version = json.loads(text)['version'] if text else None
-                except (ValueError, KeyError, TypeError):
-                    version = None
-                if isinstance(version, str):
-                    found[('node', package[:200], version[:80])] = None
-    sites = [(workspace, posixpath.join(env, 'lib')) for env in ('.venv', 'venv')] + ([(home, '.local/lib')] if home else [])
+        value = None
+        if part in ('--prefix', '--target', '-t') and index + 1 < len(argv) and isinstance(argv[index + 1], str):
+            value = argv[index + 1]
+        elif part.startswith('--prefix='):
+            value = part[len('--prefix='):]
+        elif part.startswith('--target='):
+            value = part[len('--target='):]
+        if value:
+            norm = posixpath.normpath(value if value.startswith('/') else WORKSPACE + value)
+            if norm not in SYSTEM_PREFIXES and norm not in found:
+                found.append(norm)
+    return found
+
+
+def _scan_pip_site(found, volume, site):
+    for name in names_inside(volume, site):
+        if name.endswith('.dist-info') and '-' in name:
+            package, _, version = name[:-len('.dist-info')].rpartition('-')
+            if package and version:
+                found[('pip', package[:200], version[:80])] = None
+
+
+def installed(workspace, home, extra_prefixes=()):
+    """{(manager, name, version): where it came from} as the package managers'
+    own records on the host-mounted volumes have it. The agent can write those
+    files, so a fact drawn from them is `reported`, not seen.
+
+    `extra_prefixes` may name container prefixes (e.g. `/workspace/custom-env`
+    or `/home/node/myenv`) extracted from package-manager argv; only prefixes
+    inside the sandbox's own workspace or home volume are walked from the host.
+    Container-ephemeral paths like `/tmp/venv` are observed directly via open
+    syscalls (`dist_info_from_path`)."""
+    found = {}
+    if workspace:
+        roots = [''] + [name for name in names_inside(workspace, '') if name not in SKIPPED and not name.startswith('.')][:50]
+        for root in roots:
+            modules = posixpath.join(root, 'node_modules')
+            lock = read_inside(workspace, posixpath.join(modules, '.package-lock.json'), 32 * 1024 * 1024)
+            try:
+                listed = json.loads(lock)['packages'] if lock else None
+            except (ValueError, KeyError, TypeError):
+                listed = None
+            if isinstance(listed, dict):
+                for key, entry in listed.items():
+                    if isinstance(key, str) and isinstance(entry, dict) and isinstance(entry.get('version'), str):
+                        found[('npm', key.rsplit('node_modules/', 1)[-1][:200], entry['version'][:80])] = str(entry.get('resolved') or '')[:300] or None
+                continue
+            # No npm record (yarn, pnpm, bun): the packages at the top of node_modules.
+            for name in names_inside(workspace, modules)[:1000]:
+                for package in ([posixpath.join(name, inner) for inner in names_inside(workspace, posixpath.join(modules, name))[:200]]
+                                if name.startswith('@') else [name]):
+                    text = read_inside(workspace, posixpath.join(modules, package, 'package.json'), 1024 * 1024)
+                    try:
+                        version = json.loads(text)['version'] if text else None
+                    except (ValueError, KeyError, TypeError):
+                        version = None
+                    if isinstance(version, str):
+                        found[('node', package[:200], version[:80])] = None
+    sites = ([(workspace, posixpath.join(env, 'lib')) for env in ('.venv', 'venv')] if workspace else []) + ([(home, '.local/lib')] if home else [])
+    direct_sites = []
+    for prefix in extra_prefixes or ():
+        if not isinstance(prefix, str) or not prefix:
+            continue
+        norm = posixpath.normpath(prefix)
+        if workspace and (norm == WORKSPACE.rstrip('/') or norm.startswith(WORKSPACE)):
+            rel = norm[len(WORKSPACE):] if norm.startswith(WORKSPACE) else ''
+            lib = posixpath.join(rel, 'lib') if rel else 'lib'
+            if (workspace, lib) not in sites:
+                sites.append((workspace, lib))
+            if rel and (workspace, rel) not in direct_sites:
+                direct_sites.append((workspace, rel))
+        elif home and norm.startswith('/home/'):
+            parts = PurePosixPath(norm).parts   # ('/', 'home', '<user>', ...)
+            if len(parts) >= 4:
+                rel = posixpath.join(*parts[3:])
+                lib = posixpath.join(rel, 'lib')
+                if (home, lib) not in sites:
+                    sites.append((home, lib))
+                if (home, rel) not in direct_sites:
+                    direct_sites.append((home, rel))
     for volume, lib in sites:
         for python in names_inside(volume, lib)[:10]:
-            for name in names_inside(volume, posixpath.join(lib, python, 'site-packages')):
-                if name.endswith('.dist-info') and '-' in name:
-                    package, _, version = name[:-len('.dist-info')].rpartition('-')
-                    found[('pip', package[:200], version[:80])] = None
+            _scan_pip_site(found, volume, posixpath.join(lib, python, 'site-packages'))
+    for volume, site in direct_sites:
+        _scan_pip_site(found, volume, site)
     return found
 
 
@@ -361,6 +472,8 @@ class Sandbox:
         self.watches = {}        # folder -> inotify watch
         self.counts = {}         # step -> opens that were only counted
         self.packages = None     # what was installed when last looked
+        self.package_prefixes = set()     # extra venv/target prefixes seen in package-manager argv
+        self.observed_packages = {}       # {(manager, name, version): None} seen via open syscalls (e.g. /tmp/venv)
         self.package_due = self.package_who = None
         self.registry_at = float('-inf')   # when a package registry was last connected to
         self.gap_at = float('-inf')        # when events were last lost
@@ -685,8 +798,12 @@ class Engine(threading.Thread):
                         and writer['who'].get('start_ns') in (None, event.get('process_start_ns'))):
                     writer['gone'] = True
                     box.due[path] = min(box.due.get(path, now + SETTLE), now + SETTLE)
-        if gone and box.workspace and PACKAGE_TOOLS & {posixpath.basename(part) for part in gone['argv'][:4]}:
-            # A package manager finished: see what it left, once it has settled.
+        if gone and is_package_manager(gone.get('argv')):
+            # A package manager finished: record any venv/target prefix it named
+            # and inspect what it left once writes have settled.
+            for prefix in package_prefixes(gone.get('argv')):
+                if len(box.package_prefixes) < 64:
+                    box.package_prefixes.add(prefix)
             box.package_due = self.clock() + 1
             box.package_who = self.who(box, event, gone)
 
@@ -790,11 +907,21 @@ class Engine(threading.Thread):
     def opened(self, box, event):
         at_ns = int(event.get('timestamp_ns') or 0) or time.time_ns()
         who = self.who(box, event)
+        flags, errno = event.get('flags', 0), event.get('errno', 0)
+        writing = (flags & O_ACCMODE) != 0 or bool(flags & (O_CREAT | O_TRUNC))
+        if writing and not errno and not who.get('own'):
+            pkg = dist_info_from_path(observed_path(event))
+            if pkg and pkg not in box.observed_packages:
+                box.observed_packages[pkg] = None
+                if len(box.observed_packages) > 5000:
+                    box.observed_packages.pop(next(iter(box.observed_packages)))
+                due = self.clock() + 1
+                box.package_due = min(box.package_due, due) if box.package_due else due
+                if not box.package_who or who.get('call_id'):
+                    box.package_who = who
         path = project_path(event)
         if path is None or not box.workspace:
             return self.counted(box, who, '(outside the project)', at_ns)
-        flags, errno = event.get('flags', 0), event.get('errno', 0)
-        writing = (flags & O_ACCMODE) != 0 or bool(flags & (O_CREAT | O_TRUNC))
         guard = box.guarded.get(path)
         top = path.split('/', 1)[0] if '/' in path else '(project root)'
         if guard is None:
@@ -1187,9 +1314,9 @@ class Engine(threading.Thread):
 
     def packages(self, box):
         """What a package manager left that was not there before."""
-        if not box.workspace:
+        if not box.workspace and not box.observed_packages:
             return
-        now = installed(box.workspace, box.home)
+        now = {**installed(box.workspace, box.home, extra_prefixes=box.package_prefixes), **box.observed_packages}
         before, box.packages = box.packages or {}, now
         fresh = sorted(key for key in now if key not in before)
         if not fresh:
