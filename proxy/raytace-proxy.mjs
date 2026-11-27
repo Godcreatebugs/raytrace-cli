@@ -34,6 +34,7 @@ import { recapOutline, recapRequest, recapText, parseRecap, DEFAULT_OBSERVER } f
 import { groupByCall, assessmentRequests, combineGroup, rulesOnly, withProbabilities } from './call-assessment.mjs';
 import { prepareStep, attributionKey, proposerRequest, parseProposals, candidates, jevRequests, combine, withoutJev } from './step-attribution.mjs';
 import { STAR_ACTIONS, recordStarPromptState, starPromptStatus } from './star-prompt.mjs';
+import { recordSignupPromptState, signupPromptStatus, validEmail } from './signup-prompt.mjs';
 
 try { loadEnvFile(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const routing = providerConfig();
@@ -44,7 +45,7 @@ const summaryModel = process.env.RAYTACE_SUMMARY_MODEL
   : (routing.models.oss || routing.defaultModel);
 // Bumped whenever the dashboard needs endpoints an older proxy lacks; the
 // CLI restarts a proxy it started that reports less (src/proxy-process.mjs).
-const PROXY_API = 6;
+const PROXY_API = 7;
 const fallbackSession = { session_id: randomUUID(), session_started_at: new Date().toISOString() };
 
 const port = Number(process.env.RAYTACE_PORT || 8797);
@@ -583,6 +584,7 @@ const server = createServer(async (req, res) => {
   // after an upgrade (src/proxy-process.mjs PROXY_API) and replace it.
   if (req.method === 'GET' && req.url === '/raytace/version') return json(200, { api: PROXY_API });
   if (req.method === 'GET' && req.url === '/raytace/star-prompt') return json(200, starPromptStatus({ dataDir, prompts: db.turnCount() }));
+  if (req.method === 'GET' && req.url === '/raytace/signup-prompt') return json(200, signupPromptStatus({ dataDir, prompts: db.turnCount() }));
   if (req.method === 'GET' && req.url === '/raytace/account') return json(200, { signed_in: false, plan: 'free', features: [] });
   if (req.method === 'GET' && req.url === '/raytace/models') return json(200, { models: routing.mode === 'openrouter' ? Object.entries(routing.models).map(([alias, id]) => ({ alias, id })) : [], execution_available: routing.mode === 'openrouter' });
   const stepRoute = req.url?.match(/^\/raytace\/steps\/([a-f0-9-]+)\/(\d+)$/);
@@ -692,7 +694,7 @@ const server = createServer(async (req, res) => {
     ingestClaudeCode(path, { final: CLAUDE_CODE_FINAL_EVENTS.has(note.hook_event_name) && note.more !== true });
     return;
   }
-  if (localApi && (req.method !== 'POST' || !['/raytace/experiments', '/raytace/step-runs','/raytace/explanations', '/raytace/attribution', '/raytace/summaries', '/raytace/prompt-context/summary', '/raytace/forks', '/raytace/recap', '/raytace/star-prompt'].includes(req.url))) return json(404, { error: 'Unknown local endpoint.' });
+  if (localApi && (req.method !== 'POST' || !['/raytace/experiments', '/raytace/step-runs','/raytace/explanations', '/raytace/attribution', '/raytace/summaries', '/raytace/prompt-context/summary', '/raytace/forks', '/raytace/recap', '/raytace/star-prompt', '/raytace/signup-prompt'].includes(req.url))) return json(404, { error: 'Unknown local endpoint.' });
   if (localApi && (req.headers['x-raytace-experiment'] !== '1' || !req.headers['content-type']?.includes('application/json'))) return json(403, { error: 'Use the experiment control in the dashboard.' });
   const parts = []; let bytes = 0;
   for await (const part of req) { bytes += part.length; if (bytes > (localApi ? 600_000 : 20_000_000)) return json(413, { error: 'Request too large.' }); parts.push(part); }
@@ -704,6 +706,39 @@ const server = createServer(async (req, res) => {
       if (!STAR_ACTIONS.has(action)) return json(400, { error: 'Unknown star prompt action.' });
       const source = body?.source === 'sidebar' ? 'sidebar' : 'dashboard';
       return json(200, { ok: true, state: recordStarPromptState(dataDir, action, source) });
+    } catch (error) { return json(400, { error: error.message }); }
+  }
+  if (req.method === 'POST' && req.url === '/raytace/signup-prompt') {
+    try {
+      const body = JSON.parse(requestBody);
+      const action = String(body?.action ?? '');
+      if (action === 'clicked_signup' || action === 'dismissed') {
+        return json(200, { ok: true, state: recordSignupPromptState(dataDir, action, 'local-dashboard') });
+      }
+      if (action === 'subscribe') {
+        const email = validEmail(body?.email);
+        if (!email) return json(400, { error: 'Please enter a valid email address.' });
+        const apiBase = (process.env.RAYTRACE_API_URL || 'https://api.raytracer.si').replace(/\/$/, '');
+        let upstream;
+        try {
+          // Forward ONLY email and source — never any local trace, path, or machine metadata.
+          upstream = await fetch(`${apiBase}/v1/newsletter/subscribe`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'raytrace-cli' },
+            body: JSON.stringify({ email, source: 'local-dashboard' }),
+            signal: AbortSignal.timeout(10_000),
+          });
+        } catch {
+          return json(502, { error: 'Could not reach RayTrace right now. Please try again later.' });
+        }
+        const data = await upstream.json().catch(() => ({}));
+        if (!upstream.ok) {
+          const status = upstream.status >= 400 && upstream.status < 500 ? upstream.status : 502;
+          return json(status, { error: data.error || 'Could not subscribe right now. Please try again later.' });
+        }
+        return json(200, { ok: true, state: recordSignupPromptState(dataDir, 'subscribed', 'local-dashboard') });
+      }
+      return json(400, { error: 'Unknown signup prompt action.' });
     } catch (error) { return json(400, { error: error.message }); }
   }
   if (req.method === 'POST' && req.url === '/raytace/forks') {

@@ -47,7 +47,7 @@ export async function call(method, path, { body, headers = {}, autoLogin = true 
   const { url, key } = await api({ autoLogin });
   let response;
   try {
-    response = await fetch(new URL(path, url), { method, body, headers: { authorization: `Bearer ${key}`, ...headers } });
+    response = await fetch(new URL(path, url), { method, body, headers: { 'user-agent': 'raytrace-cli', authorization: `Bearer ${key}`, ...headers } });
   } catch {
     throw unreachable(url);
   }

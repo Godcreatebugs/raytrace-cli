@@ -5,15 +5,15 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 
 export const STAR_URL = 'https://github.com/Godcreatebugs/raytrace-cli';
-export const WEBSITE_URL = 'https://raytracer.si';
+export const WEBSITE_URL = 'https://raytracer.si/sign-in.html?src=star-thanks';
 export const STAR_PROMPT_THRESHOLD = 3;
 export const STAR_PROMPT_FILE = 'star-prompt.json';
 export const STAR_ACTIONS = new Set(['opened', 'already_starred', 'dismissed']);
 const STAR_SOURCES = new Set(['cli', 'dashboard', 'sidebar']);
 
 export function starPromptOptedOut(env = process.env) {
-  const value = env?.RAYTRACE_NO_STAR_PROMPT;
-  return value === '1' || value === 'true';
+  const off = (v) => v === '1' || v === 'true';
+  return off(env?.RAYTRACE_NO_STAR_PROMPT) || off(env?.RAYTRACE_NO_PROMPTS);
 }
 
 /** Read the saved star-prompt state from `dataDir`, or null when pending/missing. */
