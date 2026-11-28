@@ -55,19 +55,29 @@ def event_page(db, query):
         clauses.append("kind IN ('exec_succeeded','exec_failed','process_exit','collection_gap','collection_error','collector_connected','collector_disconnected')")
     where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
     order = 'ASC' if 'after' in query else 'DESC'
-    rows = db.execute('SELECT id,body,container_id FROM runtime_events'+where+' ORDER BY id '+order+' LIMIT ?', (*params, limit+1)).fetchall()
-    events = []
-    for identifier, body, bound_container in rows[:limit]:
-        event=json.loads(body); event.pop('raw_packet_base64',None)
-        event['event_id']=identifier; event['container_id']=bound_container; events.append(event)
-    page = {'events':events,'next_before':None if 'after' in query else (rows[limit-1][0] if len(rows)>limit else None)}
-    if 'after' in query:
-        page['next_after'] = rows[limit-1][0] if len(rows) > limit else None
-    # Metadata comes from the same selected container and time interval,
-    # independently of pagination or the processes-only display filter.
-    page['coverage'] = coverage_page(db, query)
-    page['gaps'] = page['coverage']['gaps']
-    return page
+    # Hold a single SQLite read snapshot across the event select and
+    # coverage_page() so a process_exit written in between can never advance
+    # coverage.latest past the returned rows and make the forwarder skip it (#157).
+    started_tx = not db.in_transaction
+    if started_tx:
+        db.execute('BEGIN')
+    try:
+        rows = db.execute('SELECT id,body,container_id FROM runtime_events'+where+' ORDER BY id '+order+' LIMIT ?', (*params, limit+1)).fetchall()
+        events = []
+        for identifier, body, bound_container in rows[:limit]:
+            event=json.loads(body); event.pop('raw_packet_base64',None)
+            event['event_id']=identifier; event['container_id']=bound_container; events.append(event)
+        page = {'events':events,'next_before':None if 'after' in query else (rows[limit-1][0] if len(rows)>limit else None)}
+        if 'after' in query:
+            page['next_after'] = rows[limit-1][0] if len(rows) > limit else None
+        # Metadata comes from the same selected container and time interval,
+        # independently of pagination or the processes-only display filter.
+        page['coverage'] = coverage_page(db, query)
+        page['gaps'] = page['coverage']['gaps']
+        return page
+    finally:
+        if started_tx and db.in_transaction:
+            db.execute('COMMIT')
 
 
 def coverage_page(db, query):
@@ -113,10 +123,17 @@ def fact_page(db, query):
     clauses, params = ['id > ?'], [after]
     if container:
         clauses.append('container_id = ?'); params.append(container)
-    rows = db.execute('SELECT id, body FROM facts WHERE ' + ' AND '.join(clauses) + ' ORDER BY id LIMIT ?', (*params, limit + 1)).fetchall()
-    facts = [{**json.loads(body), 'id': identifier} for identifier, body in rows[:limit]]
-    latest = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'facts'").fetchone()
-    return {'facts': facts, 'next_after': facts[-1]['id'] if len(rows) > limit else None, 'latest': latest[0] if latest else 0}
+    started_tx = not db.in_transaction
+    if started_tx:
+        db.execute('BEGIN')
+    try:
+        rows = db.execute('SELECT id, body FROM facts WHERE ' + ' AND '.join(clauses) + ' ORDER BY id LIMIT ?', (*params, limit + 1)).fetchall()
+        facts = [{**json.loads(body), 'id': identifier} for identifier, body in rows[:limit]]
+        latest = db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'facts'").fetchone()
+        return {'facts': facts, 'next_after': facts[-1]['id'] if len(rows) > limit else None, 'latest': latest[0] if latest else 0}
+    finally:
+        if started_tx and db.in_transaction:
+            db.execute('COMMIT')
 
 PAGE = '''<!doctype html><meta charset="utf-8"><title>RayTrace runtime evidence</title>
 <style>body{font:15px system-ui;background:#111827;color:#e5e7eb;margin:32px}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:10px;border-bottom:1px solid #374151}code{white-space:pre-wrap}select{padding:8px} .note{color:#fbbf24}</style>

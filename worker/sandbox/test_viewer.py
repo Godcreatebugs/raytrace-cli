@@ -83,3 +83,36 @@ class PaginationTests(unittest.TestCase):
         page=event_page(db,{'container':['target'],'processes':['1']})
         self.assertEqual(sorted(e['kind'] for e in page['events']),['collector_disconnected','exec_failed','exec_succeeded','process_exit'])
         db.close()
+
+    def test_event_page_and_coverage_latest_share_one_read_snapshot(self):
+        # Regression for #157: a process_exit written by another connection
+        # between SELECT runtime_events and coverage_page() must not inflate
+        # coverage.latest past the events returned on this page.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'runtime.db'
+            writer = sqlite3.connect(path)
+            writer.execute('PRAGMA journal_mode=WAL')
+            writer.execute('CREATE TABLE runtime_events(id INTEGER PRIMARY KEY,container_id TEXT,received_ms INTEGER,kind TEXT,body TEXT)')
+            writer.execute('INSERT INTO runtime_events VALUES(1,?,?,?,?)',
+                           ('box', 1000, 'exec_succeeded', json.dumps({'kind': 'exec_succeeded', 'pid': 634})))
+            writer.commit()
+
+            reader = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+            real_coverage = viewer.coverage_page
+            def race_coverage(db, query):
+                # Commit a process_exit right before coverage_page() runs.
+                writer.execute('INSERT INTO runtime_events VALUES(2,?,?,?,?)',
+                               ('box', 1005, 'process_exit', json.dumps({'kind': 'process_exit', 'pid': 634, 'exit_code': 0})))
+                writer.commit()
+                return real_coverage(db, query)
+
+            with mock.patch.object(viewer, 'coverage_page', side_effect=race_coverage):
+                page = event_page(reader, {'container': ['box'], 'after': ['0'], 'processes': ['1']})
+            self.assertEqual([e['event_id'] for e in page['events']], [1])
+            self.assertEqual(page['coverage']['latest'], 1,
+                             'coverage.latest must match the read snapshot so process_exit id=2 is not skipped')
+            # The next poll after cursor=1 must still deliver process_exit id=2.
+            next_page = event_page(reader, {'container': ['box'], 'after': [str(page['coverage']['latest'])], 'processes': ['1']})
+            self.assertEqual([(e['event_id'], e['kind']) for e in next_page['events']], [(2, 'process_exit')])
+            reader.close()
+            writer.close()
