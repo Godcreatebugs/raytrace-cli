@@ -380,6 +380,27 @@ class EveryProjectFile(unittest.TestCase):
         (fact,) = self.engine.facts.values()
         self.assertEqual((fact['effect'], fact['certainty'], fact['pid'], fact['call_id']), ('changed', 'confirmed', 10, 'toolu_write'))
 
+    def test_announced_read_of_ordinary_project_file_emits_confirmed_read_fact(self):
+        # Regression for #156: an explicit Read tool call announced by the hook
+        # produces a kernel-confirmed read fact even on an ordinary project file,
+        # while unannounced reads of the same file stay counted (not spammed).
+        self.engine.refresh(self.box)
+        self.box.processes[10] = {'start_ns': '10', 'ppid': 1, 'name': 'claude.exe', 'argv': ['claude'], 'call_id': None}
+        read = {'kind': 'open', 'pathname': '/workspace/src/app.js', 'flags': 0, 'errno': 0, 'pid': 10, 'ppid': 1,
+                'process_start_ns': '10', 'sysno': 56}
+        now = time.time_ns()
+        # Unannounced read of an ordinary project file: counted only.
+        self.engine.opened(self.box, {**read, 'timestamp_ns': str(now - 60_000_000_000)})
+        self.assertEqual([f for f in self.engine.facts.values() if f['kind'] == 'file'], [])
+        # Announced Read tool call: kernel open emits a confirmed read fact with call_id.
+        self.hook(66, 'begin', 'toolu_read_proj', 'src/app.js', now)
+        self.engine.opened(self.box, {**read, 'timestamp_ns': str(now + 1_000_000)})
+        self.hook(68, 'end', 'toolu_read_proj', 'src/app.js', now + 2_000_000)
+        facts = [f for f in self.engine.facts.values() if f['kind'] == 'file']
+        self.assertEqual(len(facts), 1)
+        self.assertEqual((facts[0]['path'], facts[0]['effect'], facts[0]['certainty'], facts[0]['call_id'], facts[0]['call_from']),
+                         ('src/app.js', 'read', 'confirmed', 'toolu_read_proj', 'tool_report'))
+
     def test_only_the_hook_can_announce_a_call(self):
         self.engine.refresh(self.box)
         self.box.processes[10] = {'start_ns': '10', 'ppid': 1, 'name': 'claude.exe', 'argv': ['claude'], 'call_id': None}
@@ -482,7 +503,7 @@ class PackageLedger(unittest.TestCase):
         self._make_dist_info(self.workspace.name, 'custom-env/lib/python3.11/site-packages', 'requests', '2.32.0')
         # Without the argv prefix, installed() wouldn't scan /workspace/custom-env.
         self.assertEqual(engine.installed(self.workspace.name, self.home.name), {})
-        self.assertIn(('pip', 'requests', '2.32.0'),
+        self.assertIn(('pip', 'requests', '2.32.0', '/workspace/custom-env/lib/python3.11/site-packages'),
                       engine.installed(self.workspace.name, self.home.name, extra_prefixes=['/workspace/custom-env']))
         self.box.processes[51] = {'start_ns': '51', 'ppid': 1, 'name': 'python3.11',
                                   'argv': ['/workspace/custom-env/bin/python', '-m', 'pip', 'install', 'requests'],
@@ -544,6 +565,30 @@ class PackageLedger(unittest.TestCase):
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]['total'], 1)
         self.assertEqual(facts[0]['packages'], [{'name': 'tabulate', 'version': '0.10.0'}])
+
+    def test_same_package_in_two_prefixes_emits_fact_for_second_prefix(self):
+        # Regression for #158: pytest 9.2.0 first unpacked into /tmp/pylibs,
+        # then later pip-installed into /tmp/venv must emit a second fact.
+        self.box.processes[80] = {'start_ns': '80', 'ppid': 1, 'name': 'python3',
+                                  'argv': ['python3', '-I', '-m', 'zipfile', '-e', 'pytest.whl', '/tmp/pylibs'],
+                                  'call_id': 'call_pylibs'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/tmp/pylibs/pytest-9.2.0.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 80, 'ppid': 1,
+                                      'process_start_ns': '80', 'timestamp_ns': '5000', 'sysno': 56})
+        self.engine.packages(self.box)
+
+        self.box.processes[81] = {'start_ns': '81', 'ppid': 1, 'name': 'python3.11',
+                                  'argv': ['/tmp/venv/bin/python', '-m', 'pip', 'install', '-q', 'pytest'],
+                                  'call_id': 'call_tmpvenv'}
+        self.engine.opened(self.box, {'kind': 'open', 'pathname': '/tmp/venv/lib/python3.11/site-packages/pytest-9.2.0.dist-info/METADATA',
+                                      'flags': engine.O_CREAT | engine.O_TRUNC | 1, 'errno': 0, 'pid': 81, 'ppid': 1,
+                                      'process_start_ns': '81', 'timestamp_ns': '6000', 'sysno': 56})
+        self.engine.exited(self.box, {'pid': 81, 'process_start_ns': '81'})
+        self.engine.packages(self.box)
+
+        by_call = {f['call_id']: (f['prefix'], f['packages']) for f in self.engine.facts.values() if f['kind'] == 'package'}
+        self.assertEqual(by_call['call_pylibs'], ('/tmp/pylibs', [{'name': 'pytest', 'version': '9.2.0'}]))
+        self.assertEqual(by_call['call_tmpvenv'], ('/tmp/venv/lib/python3.11/site-packages', [{'name': 'pytest', 'version': '9.2.0'}]))
 
 
 if __name__ == '__main__':

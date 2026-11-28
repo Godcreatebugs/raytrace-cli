@@ -268,7 +268,7 @@ def project_path(event):
 def dist_info_from_path(path):
     """If `path` is a Python package metadata file inside a `*.dist-info`
     folder anywhere in the container (including `/tmp/venv`), return
-    `('pip', package, version)`; else None."""
+    `('pip', package, version, site_dir)`; else None."""
     if not path:
         return None
     folder, leaf = posixpath.split(path)
@@ -280,7 +280,8 @@ def dist_info_from_path(path):
     package, _, version = dist[:-len('.dist-info')].rpartition('-')
     if not package or not version or package.startswith('.'):
         return None
-    return ('pip', package[:200], version[:80])
+    site_dir = posixpath.dirname(folder) or '/'
+    return ('pip', package[:200], version[:80], site_dir[:300])
 
 
 def is_package_manager(argv):
@@ -331,18 +332,24 @@ def package_prefixes(argv):
     return found
 
 
-def _scan_pip_site(found, volume, site):
+def _scan_pip_site(found, volume, site, container_site):
     for name in names_inside(volume, site):
         if name.endswith('.dist-info') and '-' in name:
             package, _, version = name[:-len('.dist-info')].rpartition('-')
             if package and version:
-                found[('pip', package[:200], version[:80])] = None
+                found[('pip', package[:200], version[:80], container_site[:300])] = None
 
 
 def installed(workspace, home, extra_prefixes=()):
-    """{(manager, name, version): where it came from} as the package managers'
-    own records on the host-mounted volumes have it. The agent can write those
-    files, so a fact drawn from them is `reported`, not seen.
+    """{(manager, name, version, site_dir): where it came from} as the package
+    managers' own records on the host-mounted volumes have it. The agent can
+    write those files, so a fact drawn from them is `reported`, not seen.
+
+    Keys include `site_dir` (the container path of the site-packages or
+    node_modules directory) so installing the same `(name, version)` into a
+    second environment (e.g. `/tmp/venv` after `/tmp/pylibs`) is not dropped,
+    while volume scans and `opened()` observations of the same prefix still
+    deduplicate cleanly.
 
     `extra_prefixes` may name container prefixes (e.g. `/workspace/custom-env`
     or `/home/node/myenv`) extracted from package-manager argv; only prefixes
@@ -354,6 +361,7 @@ def installed(workspace, home, extra_prefixes=()):
         roots = [''] + [name for name in names_inside(workspace, '') if name not in SKIPPED and not name.startswith('.')][:50]
         for root in roots:
             modules = posixpath.join(root, 'node_modules')
+            container_modules = posixpath.normpath(WORKSPACE + modules)
             lock = read_inside(workspace, posixpath.join(modules, '.package-lock.json'), 32 * 1024 * 1024)
             try:
                 listed = json.loads(lock)['packages'] if lock else None
@@ -362,7 +370,7 @@ def installed(workspace, home, extra_prefixes=()):
             if isinstance(listed, dict):
                 for key, entry in listed.items():
                     if isinstance(key, str) and isinstance(entry, dict) and isinstance(entry.get('version'), str):
-                        found[('npm', key.rsplit('node_modules/', 1)[-1][:200], entry['version'][:80])] = str(entry.get('resolved') or '')[:300] or None
+                        found[('npm', key.rsplit('node_modules/', 1)[-1][:200], entry['version'][:80], container_modules[:300])] = str(entry.get('resolved') or '')[:300] or None
                 continue
             # No npm record (yarn, pnpm, bun): the packages at the top of node_modules.
             for name in names_inside(workspace, modules)[:1000]:
@@ -374,9 +382,12 @@ def installed(workspace, home, extra_prefixes=()):
                     except (ValueError, KeyError, TypeError):
                         version = None
                     if isinstance(version, str):
-                        found[('node', package[:200], version[:80])] = None
-    sites = ([(workspace, posixpath.join(env, 'lib')) for env in ('.venv', 'venv')] if workspace else []) + ([(home, '.local/lib')] if home else [])
+                        found[('node', package[:200], version[:80], container_modules[:300])] = None
+    sites = ([(workspace, posixpath.join(env, 'lib'), posixpath.normpath(WORKSPACE + posixpath.join(env, 'lib'))) for env in ('.venv', 'venv')] if workspace else []) \
+        + ([(home, '.local/lib', '/home/node/.local/lib')] if home else [])
     direct_sites = []
+    seen_sites = {(v, lib) for v, lib, _ in sites}
+    seen_direct = set()
     for prefix in extra_prefixes or ():
         if not isinstance(prefix, str) or not prefix:
             continue
@@ -384,24 +395,30 @@ def installed(workspace, home, extra_prefixes=()):
         if workspace and (norm == WORKSPACE.rstrip('/') or norm.startswith(WORKSPACE)):
             rel = norm[len(WORKSPACE):] if norm.startswith(WORKSPACE) else ''
             lib = posixpath.join(rel, 'lib') if rel else 'lib'
-            if (workspace, lib) not in sites:
-                sites.append((workspace, lib))
-            if rel and (workspace, rel) not in direct_sites:
-                direct_sites.append((workspace, rel))
+            container_lib = posixpath.join(norm, 'lib')
+            if (workspace, lib) not in seen_sites:
+                seen_sites.add((workspace, lib))
+                sites.append((workspace, lib, container_lib))
+            if rel and (workspace, rel) not in seen_direct:
+                seen_direct.add((workspace, rel))
+                direct_sites.append((workspace, rel, norm))
         elif home and norm.startswith('/home/'):
             parts = PurePosixPath(norm).parts   # ('/', 'home', '<user>', ...)
             if len(parts) >= 4:
                 rel = posixpath.join(*parts[3:])
                 lib = posixpath.join(rel, 'lib')
-                if (home, lib) not in sites:
-                    sites.append((home, lib))
-                if (home, rel) not in direct_sites:
-                    direct_sites.append((home, rel))
-    for volume, lib in sites:
+                container_lib = posixpath.join(norm, 'lib')
+                if (home, lib) not in seen_sites:
+                    seen_sites.add((home, lib))
+                    sites.append((home, lib, container_lib))
+                if (home, rel) not in seen_direct:
+                    seen_direct.add((home, rel))
+                    direct_sites.append((home, rel, norm))
+    for volume, lib, container_lib in sites:
         for python in names_inside(volume, lib)[:10]:
-            _scan_pip_site(found, volume, posixpath.join(lib, python, 'site-packages'))
-    for volume, site in direct_sites:
-        _scan_pip_site(found, volume, site)
+            _scan_pip_site(found, volume, posixpath.join(lib, python, 'site-packages'), posixpath.join(container_lib, python, 'site-packages'))
+    for volume, site, container_site in direct_sites:
+        _scan_pip_site(found, volume, site, container_site)
     return found
 
 
@@ -940,6 +957,15 @@ class Engine(threading.Thread):
             if guard is None:
                 if writing and not errno and box.guarded:
                     box.aliases.append({'path': path, 'who': who, 'at_ns': at_ns, 'syscall': self.calls.get(event.get('sysno'), ('open', 'open'))[0]})
+                elif not writing and not errno and not who.get('own'):
+                    announced_who = self.called(box, who, path, at_ns)
+                    if announced_who.get('call_from') == 'tool_report':
+                        call = self.calls.get(event.get('sysno'), ('open', 'open'))[0]
+                        self.fact(box, 'file', (path, 'read'), announced_who,
+                                  {'path': path, 'guard': None, 'effect': 'read', 'certainty': 'confirmed',
+                                   'basis': {'syscall': call, 'flags': flags, 'resolution': 'lexical',
+                                             'note': 'opened for reading; the bytes read are not captured'}}, at_ns)
+                        return
                 return self.counted(box, who, top, at_ns)
         who = self.called(box, who, path, at_ns)
         call = self.calls.get(event.get('sysno'), ('open', 'open'))[0]
@@ -953,7 +979,9 @@ class Engine(threading.Thread):
         if not writing:
             # Reads of ordinary files are counted, as before: a test run reads hundreds.
             # So is the snapshot hook reading every file after each tool call.
-            if guard == 'project' or who.get('own'):
+            # An explicit agent Read tool call announced by the hook (`call_from=tool_report`)
+            # is recorded as a confirmed read fact from the kernel open syscall (#156).
+            if (guard == 'project' and who.get('call_from') != 'tool_report') or who.get('own'):
                 return self.counted(box, who, top, at_ns)
             self.fact(box, 'file', (path, 'read'), who, {'path': path, 'guard': guard, 'effect': 'read', 'certainty': 'confirmed',
                       'basis': {**basis, 'note': 'opened for reading; the bytes read are not captured'}}, at_ns)
@@ -1324,13 +1352,13 @@ class Engine(threading.Thread):
         who = box.package_who or {}
         # Seen reaching a registry about then: the list is the manager's own word, with that beside it.
         certainty = 'corroborated' if self.clock() - box.registry_at < 300 else 'reported'
-        for manager in sorted({key[0] for key in fresh}):
-            mine = [key for key in fresh if key[0] == manager]
-            fact = self.fact(box, 'package', (manager,), who, {'manager': manager, 'packages': [], 'total': 0, 'effect': 'installed',
+        for manager, site_dir in sorted({(key[0], key[3]) for key in fresh}):
+            mine = [key for key in fresh if key[0] == manager and key[3] == site_dir]
+            fact = self.fact(box, 'package', (manager, site_dir), who, {'manager': manager, 'prefix': site_dir, 'packages': [], 'total': 0, 'effect': 'installed',
                              'basis': {'note': "read from the package manager's own records in the sandbox after it ran; the agent can write those files"}},
                              time.time_ns())
             fact['certainty'] = certainty
             fact['total'] += len(mine)
             room = MAX_PACKAGES - len(fact['packages'])
-            fact['packages'] += [{'name': name, 'version': version, **({'source': now[(manager, name, version)]} if now[(manager, name, version)] else {})}
-                                 for _, name, version in mine[:max(0, room)]]
+            fact['packages'] += [{'name': name, 'version': version, **({'source': now[(manager, name, version, site_dir)]} if now[(manager, name, version, site_dir)] else {})}
+                                 for _, name, version, _ in mine[:max(0, room)]]

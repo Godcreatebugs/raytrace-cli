@@ -198,7 +198,23 @@ test('isolated Edit (no Bash) is verified=true from file fact without kernel_con
   assert.equal(readCall.verified, false);
   assert.equal(readCall.kernel_confirmed, false);
   assert.equal(readCall.file_confirmed, false);
-  assert.equal(readCall.status, 'in_agent', 'Read must not look like a missing command');
+  assert.equal(readCall.status, 'in_agent', 'Read without a file fact stays in_agent, not a missing command');
+
+  // When engine.py emits a confirmed read fact for an announced Read (#156), Read becomes verified=true without kernel_confirmed.
+  const dbWithReadFact = {
+    ...store,
+    activityFactsForCalls: async (callIds) => new Map([
+      ...(callIds.includes('toolu_read_1') ? [['toolu_read_1', [{ kind: 'file', subject: 'slugify.py', effect: 'read', call_from: 'tool_report', pid: 741, process: 'claude.exe' }]]] : []),
+      ...(callIds.includes('toolu_edit_1') ? [['toolu_edit_1', [{ kind: 'file', subject: 'slugify.py', effect: 'changed', call_from: 'tool_report', pid: 741, process: 'claude.exe' }]]] : []),
+    ]),
+  };
+  const [traceWithRead] = await readTraces(dbWithReadFact, { includeHistory: true });
+  const verifiedRead = traceWithRead.callVerifications.find((c) => c.call_id === 'toolu_read_1');
+  assert.equal(verifiedRead.verified, true);
+  assert.equal(verifiedRead.file_confirmed, true);
+  assert.equal(verifiedRead.kernel_confirmed, false);
+  assert.equal(verifiedRead.source, 'file_fact');
+  assert.equal(verifiedRead.match_basis, 'tool_report');
 }));
 
 test('command call with an activity fact carrying call_id reports join_pending instead of not_executed (#151)', () => withStore(async (store) => {
