@@ -31,6 +31,7 @@ type SearchResult = {
   histogramBucketMs?: number;
   facets?: Record<string, Facet[]>;
   rows?: Record<string, string | number | null>[]; agg?: string; by?: string | null; series?: string[];
+  seriesKeys?: string[];
 };
 
 const RANGES = [
@@ -275,8 +276,8 @@ export function SearchView({ initialQuery = '', onQuery, onOpenCall, onOpenTrace
 
     {result?.mode === 'timechart' && <div className="rt-search-chart">
       <StackedBars rows={(result.rows ?? []) as Record<string, number>[]} height={240}
-        series={(result.series ?? []).map((name, index) => ({ key: name, label: name, color: SERIES_COLORS[index % SERIES_COLORS.length] }))} />
-      <small>{(result.series ?? []).map((name, index) => <span key={name} className="rt-legend-item"><i style={{ background: SERIES_COLORS[index % SERIES_COLORS.length] }} />{name} </span>)}</small>
+        series={(result.series ?? []).map((name, index) => ({ key: result.seriesKeys?.[index] ?? name, label: name, color: SERIES_COLORS[index % SERIES_COLORS.length] }))} />
+      <small>{(result.series ?? []).map((name, index) => <span key={result.seriesKeys?.[index] ?? index} className="rt-legend-item"><i style={{ background: SERIES_COLORS[index % SERIES_COLORS.length] }} />{name} </span>)}</small>
       {!(result.rows ?? []).length && <p className="rt-empty">No events match.</p>}
     </div>}
 

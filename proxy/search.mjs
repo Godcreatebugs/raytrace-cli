@@ -300,16 +300,24 @@ function runStats(db, parsed, range) {
   const rows = db.prepare(`SELECT ${bucket} AS t, ${expr ? `${expr} AS k,` : 'NULL AS k,'} COUNT(*) AS n ${from} WHERE ${where} GROUP BY t${expr ? ', k' : ''} ORDER BY t`).all(...params);
   const noneLabel = pipe.by ? '(none)' : '(all)';
   const seriesTotals = new Map();
-  for (const row of rows) seriesTotals.set(row.k ?? noneLabel, (seriesTotals.get(row.k ?? noneLabel) ?? 0) + row.n);
-  const series = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([key]) => key);
+  for (const row of rows) seriesTotals.set(row.k, (seriesTotals.get(row.k) ?? 0) + row.n);
+  const groups = [...seriesTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([key]) => key);
+  const series = groups.map((key) => key ?? noneLabel);
+  // Data keys are separate from labels: a model named "t" must not replace the timestamp.
+  const seriesKeys = groups.map((_, index) => `s${index}`);
+  const groupKeys = new Map(groups.map((key, index) => [key, seriesKeys[index]]));
+  const remainderKey = `s${groups.length}`;
+  if (seriesTotals.size > groups.length) {
+    series.push(series.includes('other') ? 'other (remaining)' : 'other');
+    seriesKeys.push(remainderKey);
+  }
   const byTime = new Map();
   for (const row of rows) {
-    const key = row.k ?? noneLabel;
-    const label = series.includes(key) ? key : 'other';
+    const key = groupKeys.get(row.k) ?? remainderKey;
     if (!byTime.has(row.t)) byTime.set(row.t, { t: row.t });
-    byTime.get(row.t)[label] = (byTime.get(row.t)[label] ?? 0) + row.n;
+    byTime.get(row.t)[key] = (byTime.get(row.t)[key] ?? 0) + row.n;
   }
-  return { mode: 'timechart', by: pipe.by, spanMs: pipe.spanMs, series: [...series, ...(seriesTotals.size > 8 ? ['other'] : [])], rows: [...byTime.values()] };
+  return { mode: 'timechart', by: pipe.by, spanMs: pipe.spanMs, series, seriesKeys, rows: [...byTime.values()] };
 }
 
 function facet(db, parsed, range, field, column, limit) {
